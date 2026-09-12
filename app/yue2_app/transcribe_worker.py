@@ -10,6 +10,7 @@ from .config import model_paths
 from .artifacts import declared_model_provenance, write_artifact_manifest
 from .io import atomic_json, sha256, within
 from .worker_common import JobContext, configure_environment
+from .transcription_data import prepare_workbench, validate_transcription_request
 
 
 def main(argv=None) -> int:
@@ -24,6 +25,7 @@ def main(argv=None) -> int:
     job = json.loads((job_dir / "job.json").read_text(encoding="utf-8-sig"))
     request = job.get("request", {})
     try:
+        validate_transcription_request(request)
         ctx.update("starting", pid=os.getpid())
         paths = model_paths(root)
         sys.path.insert(0, str(paths["sheetsage"]))
@@ -47,11 +49,11 @@ def main(argv=None) -> int:
         def progress(value):
             ctx.check_cancelled()
             stage = value.get("stage", "transcribing")
-            ctx.update(stage, window=value.get("window"), windows=value.get("windows"))
+            ctx.update(stage, window=value.get("window"), windows=value.get("windows"), tokens=value.get("tokens"))
 
         ctx.update("transcribing")
         result = model.transcribe(
-            str(source), output_dir=output, melody_only=bool(request.get("melody_only", True)),
+            str(source), output_dir=output, melody_only=request.get("melody_only", False),
             dtype=request.get("dtype", "bf16"), preset=request.get("preset", "default"),
             max_seconds=request.get("max_seconds"),
             render_audio=bool(request.get("render_audio", False)),
@@ -61,16 +63,34 @@ def main(argv=None) -> int:
         ctx.check_cancelled()
         abc_path = output / "score.abc"
         abc = abc_path.read_text(encoding="utf-8") if abc_path.is_file() else result.get("abc")
-        if request.get("melody_only", True) and (not abc or result.get("abc_error")):
+        if request.get("melody_only", False) and (not abc or result.get("abc_error")):
             raise RuntimeError(result.get("abc_error") or "转谱没有产生可用的旋律 ABC")
+        timeline = None
+        melody_abc = None
+        if not request.get("melody_only", False) and abc:
+            # Derive the cover score from the same predictions, without a second
+            # GPU pass or a lossy regex conversion of the complete score.
+            import importlib
+            notation = importlib.import_module(model.__class__.__module__.rsplit(".", 1)[0] + ".notation_sheetsage2")
+            melody_text, _, _ = notation.generate_abc_from_exports(
+                output / "notation" / "song_melody.mid", melody_only=True)
+            melody_abc = output / "score.melody.abc"
+            melody_abc.write_text(melody_text, encoding="utf-8")
+        if request.get("workbench", not request.get("melody_only", False)):
+            ctx.update("preparing_workbench")
+            timeline = prepare_workbench(root, source, output, result, ctx.check_cancelled)
         public = {
             "transcription_dir": str(output),
+            "source_name": str(request.get("source_name") or source.name)[:255],
             "abc": abc,
             "abc_path": str(abc_path) if abc_path.is_file() else None,
             "midi": str(output / "transcription.mid") if (output / "transcription.mid").is_file() else None,
             "duration_seconds": result.get("duration_seconds"),
             "warnings": result.get("warnings", []),
-            "melody_only": bool(request.get("melody_only", True)),
+            "melody_only": request.get("melody_only", False),
+            "timeline": str(timeline) if timeline else None,
+            "melody_abc_path": str(melody_abc) if melody_abc else None,
+            "diagnostics": result.get("diagnostics", []),
             "rendered": result.get("rendered"),
             "render_error": result.get("render_error"),
             "abc_error": result.get("abc_error"),
@@ -86,7 +106,7 @@ def main(argv=None) -> int:
             models=declared_model_provenance(root, ("SheetSage2", "MERT-v2-FullSong")),
             source={"audio": {"file": source.name, "sha256": sha256(source),
                               "bytes": source.stat().st_size}},
-            config={"melody_only": bool(request.get("melody_only", True)),
+            config={"melody_only": request.get("melody_only", False),
                     "dtype": request.get("dtype", "bf16"),
                     "preset": request.get("preset", "default"),
                     "max_seconds": request.get("max_seconds")},

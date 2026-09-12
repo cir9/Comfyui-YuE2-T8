@@ -253,6 +253,9 @@ class JobStore:
         if kind in VOICE_KINDS | WORKFLOW_KINDS and not capabilities.get("voice_conversion"):
             raise ValueError("参考音色组件不完整：请检查 Seed-VC、Demucs 与 voice 运行环境")
         request = json.loads(json.dumps(request))
+        if kind in TRANSCRIBE_KINDS:
+            from .transcription_data import validate_transcription_request
+            validate_transcription_request(request)
         if kind in ASSISTANT_KINDS:
             request = assistant_data.normalize_request(ROOT, request)
             result_panel = "assistant"
@@ -290,7 +293,7 @@ class JobStore:
             if not math.isfinite(budget) or budget <= 2:
                 raise ValueError("显存预算必须是大于 2 GiB 的有限数值")
         source = source if source in {"webui", "comfyui", "api"} else "api"
-        if result_panel not in {"create", "plan", "cover", "assistant"}:
+        if result_panel not in {"create", "plan", "cover", "assistant", "transcription"}:
             result_panel = ("cover" if kind in {"reference_cover", "voice_convert"} or
                             (kind == "generate" and request.get("abc")) else
                             "plan" if kind == "render_plan" else "create")
@@ -675,6 +678,52 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
+    def _stream_artifact(self, file: Path, stream):
+        """Bounded reads and byte ranges let the original recording seek/stream."""
+        size = os.fstat(stream.fileno()).st_size
+        start, end, status = 0, size - 1, 200
+        requested = self.headers.get("Range")
+        if requested:
+            match = re.fullmatch(r"bytes=(\d*)-(\d*)", requested.strip())
+            try:
+                if not match or not any(match.groups()) or not size:
+                    raise ValueError
+                a, b = match.groups()
+                if a:
+                    start, end = int(a), min(int(b), size - 1) if b else size - 1
+                else:
+                    if int(b) <= 0:
+                        raise ValueError
+                    start = max(0, size - int(b))
+                if start > end or start >= size:
+                    raise ValueError
+                status = 206
+            except ValueError:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+        self.send_response(status)
+        self.send_header("Content-Type", mimetypes.guess_type(file.name)[0] or "application/octet-stream")
+        self.send_header("Content-Length", str(max(0, end - start + 1)))
+        self.send_header("Accept-Ranges", "bytes")
+        self.send_header("Cache-Control", "no-cache")
+        if status == 206:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
+        self.end_headers()
+        stream.seek(start)
+        remaining = end - start + 1
+        try:
+            while remaining > 0:
+                block = stream.read(min(256 * 1024, remaining))
+                if not block:
+                    break
+                self.wfile.write(block)
+                remaining -= len(block)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+
     def do_GET(self):
         assert STORE is not None
         parsed = urllib.parse.urlparse(self.path)
@@ -733,8 +782,9 @@ class Handler(BaseHTTPRequestHandler):
                     file = within(directory, directory / relative)
                     if not file.is_file():
                         return self._error(404, "文件不存在")
-                    content = file.read_bytes()
-                return self._static_content(file, content)
+                    stream = file.open("rb")
+                with stream:
+                    return self._stream_artifact(file, stream)
             if path == "/" or path == "/index.html":
                 return self._static(WEB_ROOT / "index.html")
             if path.startswith("/static/"):

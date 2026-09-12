@@ -6,6 +6,7 @@
   <title>YuE2 本地音乐工作室</title>
   <link rel="stylesheet" href="/static/style.css">
   <link rel="stylesheet" href="/static/assistant.css">
+  <link rel="stylesheet" href="/static/transcription.css">
 </head>
 <body>
   <header>
@@ -38,6 +39,7 @@
   <nav>
     <button class="tab active" data-tab="create">创作</button>
     <button class="tab" data-tab="plan">乐谱计划</button>
+    <button class="tab" data-tab="transcription">音频转谱</button>
     <button class="tab" data-tab="cover">旋律重制 / 参考音色</button>
     <button class="tab" data-tab="assistant">AI 创作助手</button>
     <button class="tab" data-tab="history">历史</button>
@@ -140,6 +142,44 @@ This melody still waits for you</textarea></label>
           <button id="download-abc" class="ghost">下载 ABC</button>
           <button id="render-plan" class="primary" data-idle-label="渲染完整歌曲">渲染完整歌曲</button>
         </div>
+      </div>
+    </section>
+
+    <section id="transcription" class="panel">
+      <div class="section-title"><div><span>SS</span><h2>听见原曲，看见乐谱。</h2></div><p>SheetSage2 · 完整旋律、和弦、节拍、调性与段落</p></div>
+      <form id="ss-form" class="ss-upload">
+        <label class="ss-file">选择原曲<input id="ss-file" type="file" accept="audio/*" required><small>WAV / FLAC / MP3 / M4A / OGG / AAC · 保留原曲混音分析</small></label>
+        <div class="ss-options"><label>推理预设<select id="ss-preset"><option value="default">标准 · 全曲分析</option><option value="paper">论文复现 · 需要 FFmpeg 共享库</option></select></label><label>计算精度<select id="ss-dtype"><option value="bf16">BF16 · 默认</option><option value="fp32">FP32 · 对比验证</option></select></label><label>分析前 N 秒<input id="ss-max-seconds" type="number" min="0.1" step="any" placeholder="留空分析全曲"></label><button id="ss-submit" class="primary" data-idle-label="完整转谱" type="submit">完整转谱</button></div>
+      </form>
+      <div class="ss-history-row"><label>转谱记录<select id="ss-history"><option value="">选择已完成的转谱</option></select></label><button id="ss-refresh" class="ghost" type="button">刷新记录</button><span id="ss-status" role="status" aria-live="polite">上传原曲后，可在同一时间轴上对照波形与音符。</span></div>
+      <div id="ss-result" class="results"></div>
+      <div id="ss-workbench" class="hidden">
+        <div class="ss-summary"><div><p class="eyebrow">TRANSCRIPTION / ORIGINAL TIMING</p><h3 id="ss-title"></h3></div><div id="ss-facts" class="ss-facts"></div></div>
+        <div class="ss-transport">
+          <button id="ss-play" class="primary" type="button">播放</button><button id="ss-stop" class="ghost" type="button">归位</button><output id="ss-clock">00:00 / 00:00</output>
+          <label>试听<select id="ss-listen"><option value="original">仅原曲</option><option value="notes">仅 MIDI</option><option value="both" selected>原曲 + MIDI</option></select></label>
+          <label>速度<select id="ss-rate"><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1" selected>1×</option><option value="1.25">1.25×</option></select></label>
+          <label>原曲音量<input id="ss-volume" type="range" min="0" max="1" step="0.01" value="0.45"></label><label>MIDI 音量<input id="ss-synth-volume" type="range" min="0" max="1" step="0.01" value="0.65"></label>
+          <label class="check"><input id="ss-harmony" type="checkbox" checked>播放和弦</label><button id="ss-test-tone" class="ghost" type="button">MIDI 试音</button><div class="ss-meter"><meter id="ss-level" min="0" max="0.35" value="0" aria-label="MIDI 输出电平"></meter><span id="ss-synth-state">点击播放启用 MIDI</span></div>
+          <label class="check"><input id="ss-loop" type="checkbox">循环</label><label>A 秒<input id="ss-loop-a" type="number" min="0" step="0.1" value="0"></label><label>B 秒<input id="ss-loop-b" type="number" min="0.1" step="0.1" value="20"></label><button id="ss-loop-window" class="ghost" type="button">循环当前窗口</button>
+        </div>
+        <audio id="ss-audio" preload="metadata"></audio>
+        <div class="ss-overview-wrap"><canvas id="ss-overview" height="82" tabindex="0" aria-label="全曲波形与段落总览，点击定位"></canvas></div>
+        <div class="ss-roll-head"><div><strong>钢琴卷帘</strong><small>音符采用原始预测时值 · 和弦音为合成配音</small></div><div class="ss-roll-options">
+          <label class="check ss-vocal"><input id="ss-vocal" type="checkbox" checked>人声旋律</label><label class="check ss-ins"><input id="ss-ins" type="checkbox" checked>器乐旋律</label><label class="check ss-chord"><input id="ss-chord-notes" type="checkbox">显示和弦音</label>
+          <label class="check"><input id="ss-wave" type="checkbox" checked>波形叠加</label><label class="check"><input id="ss-beats" type="checkbox" checked>节拍网格</label><label class="check"><input id="ss-follow" type="checkbox" checked>跟随播放</label>
+          <label>时间窗口<select id="ss-span"><option value="5">5 秒</option><option value="10">10 秒</option><option value="20" selected>20 秒</option><option value="40">40 秒</option><option value="80">80 秒</option></select></label>
+          <button id="ss-prev" class="ghost" type="button" aria-label="前一窗口">←</button><button id="ss-next" class="ghost" type="button" aria-label="后一窗口">→</button>
+          <label>卷帘高度<input id="ss-height" type="range" min="260" max="760" step="20" value="420"></label><button id="ss-fit" class="ghost" type="button">适配音域</button>
+        </div></div>
+        <div class="ss-degree-info"><div id="ss-degree-legend" aria-label="和弦级数配色图例"></div><small>以模型当前调性的主音为 1；七级着色，变化音用相邻级条纹，转位按低音着色。小调的 ♭3 / ♭6 / ♭7 保留变化音标记。</small><small>单击音符 / 和弦试听，双击定位；可用 Tab + Enter 选择和弦。</small></div>
+        <div class="ss-canvas-wrap"><canvas id="ss-lanes" height="90" tabindex="0" aria-label="秒刻度、调性与段落时间轴"></canvas><div class="ss-chord-lane"><span>和弦</span><div id="ss-chords" aria-label="和弦时间轴，单击试听，双击定位"></div></div><canvas id="ss-roll" height="420" tabindex="0" aria-label="钢琴卷帘，点击音符查看与试听，点击空白定位，方向键移动"></canvas><div id="ss-tooltip" hidden></div></div>
+        <input id="ss-seek" class="ss-seek" type="range" min="0" max="1" value="0" step="0.01" aria-label="原曲播放位置">
+        <div class="ss-detail"><div><small id="ss-chord-caption">当前和弦 · 单击试听</small><button id="ss-current-chord" type="button" disabled>—</button><span id="ss-current-key"></span></div><div id="ss-note-detail">单击音符或和弦试听，双击定位。滚轮平移，Ctrl + 滚轮缩放。</div><small>MIDI 试听用于核对音高与时值，使用本地合成键盘音色；和弦配音来自模型导出的和弦 MIDI，不代表原曲乐器音色。</small></div>
+        <div id="ss-downloads" class="toolbar"></div>
+        <div class="toolbar"><button id="ss-to-cover" class="ghost" type="button">旋律发送到重制</button><button id="ss-to-plan" class="ghost" type="button">完整谱发送到乐谱计划</button></div>
+        <details class="ss-abc"><summary>查看完整 ABC</summary><textarea id="ss-abc" rows="15" readonly spellcheck="false" aria-label="完整转谱 ABC"></textarea></details>
+        <details class="ss-report"><summary>推理配置与诊断</summary><pre id="ss-report"></pre></details>
       </div>
     </section>
 
@@ -277,5 +317,8 @@ This melody still waits for you</textarea></label>
   <footer>YuE2 本地整合包 · 制作者 By B站UP主：T8star-Aix · 仅绑定 127.0.0.1 · 权重与输出保存在本机</footer>
   <script src="/static/app.js"></script>
   <script src="/static/assistant.js"></script>
+  <script src="/static/transcription-audio.js"></script>
+  <script src="/static/transcription-harmony.js"></script>
+  <script src="/static/transcription.js"></script>
 </body>
 </html>

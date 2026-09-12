@@ -87,7 +87,8 @@ function stageLabel(stage) {
     queued: '等待开始', starting: '正在加载模型', candidate: '正在准备生成版本',
     planning: '正在创作旋律与和弦', semantic: '正在生成音乐结构',
     synthesis: '正在合成人声与伴奏', decoding: '正在输出音频',
-    loading_transcriber: '正在加载转谱模型', transcribing: '正在从音频提取旋律',
+    loading_transcriber: '正在加载转谱模型', transcribing: '正在从音频提取乐谱',
+    preparing_workbench: '正在准备波形与钢琴卷帘',
     encoding: '正在读取音频', notation: '正在整理 ABC 与 MIDI 乐谱',
     separating_vocals: '正在分离人声与伴奏', loading_voice_model: '正在加载参考音色模型',
     converting_voice: '正在转换演唱音色', remixing: '正在重新混音',
@@ -103,7 +104,8 @@ function stageHint(job) {
     candidate: '正在准备本轮生成参数。', planning: '正在根据歌词和风格安排旋律、节拍与和弦。',
     semantic: '正在创作歌曲结构、旋律走向与音乐语义。', synthesis: '正在合成人声、乐器和声学细节。',
     decoding: '正在输出 48 kHz 双声道音频，已经接近完成。', loading_transcriber: '正在将转谱模型载入 GPU。',
-    transcribing: '正在从上传的音频中识别旋律和节拍。', encoding: '正在准备音频数据。',
+    transcribing: '正在从上传的音频中识别旋律、和弦与节拍。', encoding: '正在准备音频数据。',
+    preparing_workbench: '正在保存原曲试听与秒级波形，供钢琴卷帘对照。',
     notation: '正在生成可编辑的 ABC、MIDI 和乐谱预览。', doctor: '正在检查 GPU、运行库和全部模型文件。',
     separating_vocals: '正在把新生成歌曲拆分为人声和伴奏。', loading_voice_model: '正在将 Seed-VC、声纹和声码器载入 GPU。',
     converting_voice: '保留新歌旋律与演唱节奏，把人声转换成参考音色。', remixing: '正在将转换后的人声与原伴奏合成为 48 kHz 双声道成品。',
@@ -400,7 +402,7 @@ $$('.tab').forEach(button => button.onclick = () => {
   if (button.dataset.tab === 'history') loadHistory();
 });
 const restoredTab = savedValue('active-tab');
-if (['create', 'plan', 'cover', 'history', 'assistant'].includes(restoredTab)) $(`.tab[data-tab="${restoredTab}"]`).click();
+if (['create', 'plan', 'cover', 'history', 'assistant', 'transcription'].includes(restoredTab)) $(`.tab[data-tab="${restoredTab}"]`).click();
 
 function openHistory() { $('.tab[data-tab="history"]').click(); $('#history').scrollIntoView({behavior: 'smooth', block: 'start'}); }
 function openTaskCenter() { $('#task-center').scrollIntoView({behavior: 'smooth', block: 'nearest'}); }
@@ -636,7 +638,7 @@ async function loadHistory() {
     const {jobs} = await api('/api/jobs?limit=100');
     $('#history-list').innerHTML = jobs.map(job => {
       const result = job.result || {}; const audio = relativeAudio(job, result.audio || result.candidates?.[0]?.audio);
-      const exportButton = job.status === 'complete' && job.result ? `<button class="ghost" onclick="exportJob('${job.id}')">导出</button>` : '';
+      const exportButton = job.status === 'complete' && job.result ? `<button class="ghost" onclick="exportJob('${job.id}')">导出</button>` + (job.kind === 'transcribe' && job.result.timeline ? `<button class="ghost" onclick="openTranscription('${job.id}')">打开钢琴卷帘</button>` : '') : '';
       const retryButton = ['failed', 'cancelled'].includes(job.status) && ['generate', 'reference_cover', 'voice_convert', 'render_plan'].includes(job.kind) ? `<button class="ghost compact" onclick="resumeJob('${job.id}', this)">${job.resumable ? '从已保存阶段继续' : '重新运行'}</button>` : '';
       const logButtons = (job.kind === 'assistant' ? `<button class="ghost compact" onclick="openAssistantJob('${job.id}')">查看 / 继续创作</button>` : '') + (job.status === 'failed' ? `<button class="ghost compact" onclick="toggleJobLog('${job.id}', this)">查看任务日志</button><button class="ghost compact" onclick="openDirectory('logs')">打开日志目录</button>` : '');
       return `<article class="history-card"><header><div><b>${escapeHtml(kindLabel(job.kind))}</b><div class="meta">${escapeHtml(job.id)} · ${new Date(job.created_at * 1000).toLocaleString()} · ${escapeHtml(sourceLabel(job.source))}</div></div></header><b class="status-${job.status}">${escapeHtml(job.status === 'running' ? stageLabel(job.stage) : stageLabel(job.status))}</b>${job.error ? `<div class="meta">${escapeHtml(job.error)}</div>` : ''}${audio ? `<audio controls preload="none" src="${audioUrl(job.id, audio)}"></audio>` : ''}<div class="toolbar">${exportButton}${retryButton}${logButtons}</div><pre class="job-log hidden"></pre></article>`;
