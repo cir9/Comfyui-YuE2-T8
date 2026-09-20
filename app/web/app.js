@@ -330,7 +330,7 @@ function failureMarkup(error) {
   const id = error?.jobId;
   const job = error?.job || {};
   const oom = /out of memory/i.test(error?.message || '');
-  const reason = oom ? '显存不足，任务已停止。请在高级设置选择“低显存 · CPU 分批加载”，关闭其他占用显卡的程序后，再使用保存的阶段结果重新运行。调低预算不会缩小模型；预算还包含 2 GiB 预留。' : publicErrorSummary(error?.message);
+  const reason = oom ? '显存不足，任务已停止。先点“清理显存（不删文件）”，再在高级设置选择“低显存保护（单批次）”，然后用保存的阶段结果重新运行。关闭其他占用显卡的程序也会有帮助；预算还包含 2 GiB 预留。' : publicErrorSummary(error?.message);
   const generatedAudio = job.generated_result?.audio;
   const generatedRel = generatedAudio && id ? relativeAudio(job, generatedAudio) : null;
   const intermediate = generatedRel ? `<p>歌曲已生成，可先试听：</p><audio controls preload="metadata" aria-label="已生成歌曲试听" src="${audioUrl(id, generatedRel)}"></audio>` : '';
@@ -345,7 +345,7 @@ function failureMarkup(error) {
 async function resumeJob(id, button) {
   button.disabled = true;
   try {
-    const resumableGeneration = ['generate', 'reference_cover', 'render_plan'].includes(button.dataset.kind);
+    const resumableGeneration = ['generate', 'reference_cover', 'render_plan', 'mulacover_remix'].includes(button.dataset.kind);
     const options = {method: 'POST'};
     if (resumableGeneration) {
       options.headers = {'Content-Type': 'application/json'};
@@ -582,7 +582,7 @@ async function refreshWorkspace() {
 async function submit(kind, request, resultTarget, button = null, projectScope = String(window.workbenchProjectId?.() || '')) {
   setSubmitting(button);
   try {
-    const generation = ['generate', 'plan', 'render_plan'].includes(kind) ? request : kind === 'reference_cover' ? request.generate : null;
+    const generation = ['generate', 'plan', 'render_plan', 'mulacover_remix'].includes(kind) ? request : kind === 'reference_cover' ? request.generate : null;
     if (generation) {
       generation.memory_budget_gib = generationMemoryBudget();
       generation.model_loading = generationModelLoading();
@@ -1128,6 +1128,39 @@ async function cleanupStorage() {
   } catch (error) { alert(error.message); }
 }
 
+function formatMemoryStatus(data) {
+  const target = $('#memory-status');
+  if (!target) return;
+  const memory = data?.memory || data;
+  const aggregate = memory?.aggregate;
+  const current = data?.current_job;
+  if (!memory?.available || !aggregate) {
+    target.textContent = current ? '显存：任务运行中 · worker 独立释放' : '显存：未检测到 NVIDIA 状态';
+    target.title = memory?.error || 'nvidia-smi 不可用';
+    return;
+  }
+  const free = Number(aggregate.free_gib || 0).toFixed(1);
+  const total = Number(aggregate.total_gib || 0).toFixed(1);
+  target.textContent = `显存可用 ${free} / ${total} GiB${current ? ' · 任务运行中' : ''}`;
+  target.title = `已用 ${Number(aggregate.used_gib || 0).toFixed(1)} GiB；清理按钮不会删除文件`;
+}
+
+async function loadMemoryStatus() {
+  try { formatMemoryStatus(await api('/api/memory/status')); }
+  catch (error) { const target = $('#memory-status'); if (target) target.textContent = `显存状态失败：${error.message}`; }
+}
+
+async function clearMemory() {
+  const button = $('#free-memory');
+  if (button) { button.disabled = true; button.textContent = '正在清理显存…'; }
+  try {
+    const data = await api('/api/memory/free', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+    formatMemoryStatus(data.after ? {memory: data.after, ...data.state} : data);
+    alert(data.message || '显存缓存已清理');
+  } catch (error) { alert(error.message); }
+  finally { if (button) { button.disabled = false; button.textContent = '清理显存（不删文件）'; } await loadMemoryStatus(); }
+}
+
 async function cancelJob(id, button = null, force = false) {
   if (!id) return;
   if (button) { button.disabled = true; button.textContent = '正在取消…'; }
@@ -1145,6 +1178,7 @@ let historyQueryTimer;$('#history-query').oninput=()=>{clearTimeout(historyQuery
 $('#history-prev').onclick=()=>{historyOffset=Math.max(0,historyOffset-historyPageSize);loadHistory();};
 $('#history-next').onclick=()=>{if(historyOffset+historyPageSize<historyTotal){historyOffset+=historyPageSize;loadHistory();}};
 $('#cleanup-storage').onclick = cleanupStorage;
+$('#free-memory').onclick = clearMemory;
 $('#doctor-button').onclick = async () => {
   const button = $('#doctor-button'); const action = $('.doctor-action');
   try { const job = await submit('doctor', {verify_hashes: true}, null, button); action.dataset.result = `自检通过 · ${job.result.gpu} · ${job.result.accelerator}`; }
@@ -1152,6 +1186,7 @@ $('#doctor-button').onclick = async () => {
 };
 $('#update-button').onclick = () => availableUpdate ? installUpdate() : checkUpdate();
 
-refreshWorkspace(); loadModelSettings(); loadHistory(); loadRetention();
+refreshWorkspace(); loadModelSettings(); loadHistory(); loadRetention(); loadMemoryStatus();
 setTimeout(() => checkUpdate({quiet: true}), 500);
 setInterval(refreshWorkspace, 1200);
+setInterval(loadMemoryStatus, 5000);

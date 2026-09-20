@@ -35,6 +35,7 @@ from .config import (
 from .io import atomic_json, json_file_lock, public_job, within, remove_job_payload
 from .retention import RetentionManager, _tree_size
 from .settings import model_directory, save_model_directory, settings_info
+from .memory import clear_current_process_cuda, memory_snapshot
 from . import assistant_data
 from . import updater
 from .asset_library import AssetLibrary
@@ -515,21 +516,22 @@ class JobStore:
                 ("semi_tone_shift", 0, -12, 12), ("vocal_gain_db", 0, -18, 12),
                 ("accompaniment_gain_db", 0, -18, 12)):
                 _number(voice_request, key, default, low, high)
-        if kind in GENERATION_KINDS | WORKFLOW_KINDS | PREVIEW_KINDS:
-            generation.setdefault("offload_ar", True)
-            generation.setdefault("nar_attention", "sdpa")
-            generation.setdefault("nar_query_chunk_size", 256)
-            if type(generation["offload_ar"]) is not bool:
-                raise ValueError("offload_ar 必须是布尔值")
-            if generation["nar_attention"] not in {"sdpa", "math", "flash", "cudnn"}:
-                raise ValueError("不支持的声学注意力后端")
-            rows = generation["nar_query_chunk_size"]
-            if type(rows) is not int or not 1 <= rows <= 1024:
-                raise ValueError("声学计算分块必须是 1–1024 的整数")
-            if "vae_core_frames" in generation:
-                vae_frames = generation["vae_core_frames"]
-                if type(vae_frames) is not int or vae_frames not in {128, 256, 512, 1024}:
-                    raise ValueError("VAE 解码分块必须是 128、256、512 或 1024")
+        if kind in GENERATION_KINDS | WORKFLOW_KINDS | PREVIEW_KINDS | MULACOVER_KINDS:
+            if kind not in MULACOVER_KINDS:
+                generation.setdefault("offload_ar", True)
+                generation.setdefault("nar_attention", "sdpa")
+                generation.setdefault("nar_query_chunk_size", 256)
+                if type(generation["offload_ar"]) is not bool:
+                    raise ValueError("offload_ar 必须是布尔值")
+                if generation["nar_attention"] not in {"sdpa", "math", "flash", "cudnn"}:
+                    raise ValueError("不支持的声学注意力后端")
+                rows = generation["nar_query_chunk_size"]
+                if type(rows) is not int or not 1 <= rows <= 1024:
+                    raise ValueError("声学计算分块必须是 1–1024 的整数")
+                if "vae_core_frames" in generation:
+                    vae_frames = generation["vae_core_frames"]
+                    if type(vae_frames) is not int or vae_frames not in {128, 256, 512, 1024}:
+                        raise ValueError("VAE 解码分块必须是 128、256、512 或 1024")
             raw_budget = generation.get("memory_budget_gib", 23.5)
             try:
                 if isinstance(raw_budget, bool):
@@ -655,7 +657,7 @@ class JobStore:
                     generation = dict(request.get("generate", {}))
                     generation.update(overrides)
                     request["generate"] = generation
-                elif job["kind"] in {"generate", "render_plan"}:
+                elif job["kind"] in {"generate", "render_plan", "mulacover_remix"}:
                     request.update(overrides)
                 else:
                     raise ValueError("这个任务类型不支持覆盖生成参数")
@@ -820,6 +822,36 @@ class JobStore:
             queued = sum(1 for job_id, status in self.jobs.items()
                          if job_id != current and status.get("status") == "queued")
         return {"current_job": current, "queued": queued}
+
+    def free_memory(self, *, cancel_current: bool = False, force: bool = False) -> dict:
+        """Release allocator blocks owned by this process and report the worker state.
+
+        Generation workers are deliberately isolated processes and clean up in
+        their own ``finally`` blocks.  We never kill an active worker merely
+        because the user pressed the cleanup button; callers may opt into an
+        explicit cancellation when they really want to stop the current job.
+        """
+        state_before = self.state()
+        cancelled = None
+        if cancel_current and state_before.get("current_job"):
+            cancelled = self.cancel(state_before["current_job"], force=force)
+        before = memory_snapshot()
+        release = clear_current_process_cuda()
+        after = memory_snapshot()
+        return {
+            "ok": True,
+            "before": before,
+            "after": after,
+            "release": release,
+            "cancelled": cancelled,
+            "worker_isolation": True,
+            "state": self.state(),
+            "message": (
+                "当前任务仍在独立 worker 中运行，未中断它；任务结束后会自动释放显存。"
+                if self.state().get("current_job") else
+                "已清理当前服务进程的 CUDA 缓存；没有驻留 worker 模型。"
+            ),
+        }
 
     def _promote_completed_result(self, job_id: str, status: dict) -> None:
         """Commit useful outputs to the durable library once per completed job."""
@@ -1476,6 +1508,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/health":
                 return self._json(200, {"ok": True, "version": __version__, "root": str(ROOT),
                                         "ready": runtime_ready(), **STORE.state()})
+            if path == "/api/memory/status":
+                return self._json(200, {"ok": True, "memory": memory_snapshot(), **STORE.state()})
             if path == "/api/update/check":
                 info, _ = updater.check_update(__version__)
                 return self._json(200, info)
@@ -1714,10 +1748,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"destination": str(destination)})
             if path == "/api/unload":
                 data = self._body_json(1024) if int(self.headers.get("Content-Length", "0")) else {}
-                state = STORE.state()
-                if data.get("cancel_current") and state["current_job"]:
-                    STORE.cancel(state["current_job"], force=bool(data.get("force", False)))
-                return self._json(200, {"ok": True, "message": "worker 按任务隔离，空闲时不占用模型显存", **STORE.state()})
+                return self._json(200, STORE.free_memory(
+                    cancel_current=bool(data.get("cancel_current", False)),
+                    force=bool(data.get("force", False)),
+                ))
+            if path == "/api/memory/free":
+                data = self._body_json(1024) if int(self.headers.get("Content-Length", "0")) else {}
+                return self._json(200, STORE.free_memory(
+                    cancel_current=bool(data.get("cancel_current", False)),
+                    force=bool(data.get("force", False)),
+                ))
             return self._error(404, "接口不存在")
         except ConnectionError:
             return

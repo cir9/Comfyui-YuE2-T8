@@ -14,6 +14,7 @@ from .settings import model_directory
 
 AUDIO_SUFFIXES = {".wav", ".flac", ".mp3", ".m4a", ".ogg", ".aac"}
 MIDI_SUFFIXES = {".mid", ".midi"}
+MULACOVER_MAX_CONTEXT = 8192
 
 
 def prepare_imports(root: Path) -> None:
@@ -71,6 +72,47 @@ def _input_path(root: Path, value: Any, name: str, suffixes: set[str]) -> Path:
     if not path.is_file() or path.suffix.lower() not in suffixes:
         raise ValueError(f"{name}文件不存在或格式不受支持")
     return path
+
+
+def memory_policy(request: dict, *, prompt_tokens: int, free_gib: float | None = None,
+                  total_gib: float | None = None) -> dict[str, Any]:
+    """Choose batch and KV-cache limits without exceeding available VRAM."""
+    budget = float(request.get("memory_budget_gib", 23.5))
+    mode = str(request.get("model_loading", "auto"))
+    cfg = float(request.get("cfg_scale", 1.5))
+    duration = int(request.get("duration_seconds", 30))
+    frame_count = max(1, duration * 1000 // 80)
+    prompt_tokens = max(1, int(prompt_tokens))
+    cache_tokens = min(MULACOVER_MAX_CONTEXT, max(prompt_tokens + frame_count + 8, 128))
+    observed = [value for value in (free_gib, total_gib)
+                if value is not None and math.isfinite(value)]
+    effective = min([budget, *observed]) if observed else budget
+    low_memory = mode == "cpu-offload" or budget <= 12 or (mode == "auto" and effective < 12)
+    batch_size = 1 if low_memory else (2 if cfg > 1 else 1)
+    effective_cfg = 1.0 if batch_size == 1 and cfg > 1 else cfg
+    reasons: list[str] = []
+    if mode == "cpu-offload":
+        reasons.append("低显存保护")
+    if budget <= 12:
+        reasons.append("预算不超过 12 GiB")
+    if mode == "auto" and free_gib is not None and free_gib < 12:
+        reasons.append("当前可用显存不足 12 GiB")
+    if batch_size == 1 and cfg > 1:
+        reasons.append("单批次运行，CFG 已降为 1.0")
+    return {
+        "mode": mode,
+        "batch_size": batch_size,
+        "requested_cfg_scale": cfg,
+        "effective_cfg_scale": effective_cfg,
+        "cache_seq_len": cache_tokens,
+        "prompt_tokens": prompt_tokens,
+        "audio_frames": frame_count,
+        "budget_gib": budget,
+        "free_gib": free_gib,
+        "total_gib": total_gib,
+        "low_memory": low_memory,
+        "reason": "；".join(reasons) or "标准双批次 CFG",
+    }
 
 
 def style_tags(request: dict) -> str:
@@ -145,6 +187,9 @@ def normalize_request(root: Path, request: dict) -> dict:
         "cfg_scale": _number(request, "cfg_scale", 1.5, 0.1, 5.0),
         "temperature": _number(request, "temperature", 1.0, 0.1, 2.0),
         "topk": _integer(request, "topk", 250, 1, 8191),
+        # Preserve runtime memory controls through normalization and queueing.
+        "memory_budget_gib": request.get("memory_budget_gib", 23.5),
+        "model_loading": request.get("model_loading", "auto"),
         "project_id": str(request.get("project_id") or "")[:128],
         "midi_snapshot_id": str(request.get('midi_snapshot_id') or '')[:32],
         "midi_document_id": str(request.get('midi_document_id') or '')[:32],
@@ -200,6 +245,8 @@ def run(root: Path, job_dir: Path, request: dict, ctx) -> dict:
         ctx.update("mulacover_loading", message="正在加载重新编曲模型")
         pipe = MuLaCoverGenPipeline.from_pretrained(
             str(model_directory(root)), device=device, dtype=dtypes, lazy_load=True,
+            memory_budget_gib=float(prepared["memory_budget_gib"]),
+            model_loading=str(prepared["model_loading"]),
         )
         ctx.check_cancelled()
         ctx.update("mulacover_transcribing", message=(
@@ -211,6 +258,7 @@ def run(root: Path, job_dir: Path, request: dict, ctx) -> dict:
         midi_paths = condition.save_midi(condition_dir)
         ctx.check_cancelled()
         ctx.update("mulacover_style", message="正在编码歌词与曲风")
+        policy = memory_policy(prepared, prompt_tokens=1)
         model_inputs = pipe.preprocess(
             {
                 "lyrics": prepared["lyrics"], "tags": prepared["tags"],
@@ -220,6 +268,10 @@ def run(root: Path, job_dir: Path, request: dict, ctx) -> dict:
             },
             cfg_scale=prepared["cfg_scale"],
             max_audio_length_ms=prepared["duration_seconds"] * 1000,
+            batch_size=policy["batch_size"],
+        )
+        policy = memory_policy(
+            prepared, prompt_tokens=int(model_inputs["input_pos"].shape[1]),
         )
         ctx.check_cancelled()
 
@@ -242,6 +294,7 @@ def run(root: Path, job_dir: Path, request: dict, ctx) -> dict:
                 cfg_scale=prepared["cfg_scale"], disable_progress=True,
                 cancelled=ctx.cancelled, on_progress=progress,
             )
+        policy = getattr(pipe, "memory_policy", policy)
         import numpy as np
         np.savez_compressed(artifact_dir/'frames.npz', frames=model_outputs['frames'].detach().cpu().numpy())
         ctx.check_cancelled()
@@ -263,6 +316,7 @@ def run(root: Path, job_dir: Path, request: dict, ctx) -> dict:
             "audio": {"sample_rate": info.samplerate, "channels": info.channels, "seconds": info.duration},
             'audio_export': {key: decoded[key] for key in ('raw_peak','export_gain') if key in decoded},
             'frames': str(artifact_dir/'frames.npz'),
+            'memory_policy': policy,
         }
         atomic_json(artifact_dir / "metadata.json", metadata)
         return {

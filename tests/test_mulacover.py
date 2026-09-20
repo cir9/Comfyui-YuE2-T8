@@ -10,11 +10,30 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.yue2_app import service
-from app.yue2_app.mulacover_core import normalize_request, style_tags
+from app.yue2_app.mulacover_core import memory_policy, normalize_request, style_tags
+from app.yue2_app.memory import parse_nvidia_smi_csv
 from app.yue2_app.mulacover_models import SOURCE_FILES, readiness
 
 
 class MuLaCoverRequestTests(unittest.TestCase):
+    def test_memory_policy_scales_batch_and_cache(self):
+        request = {"memory_budget_gib": 23.5, "model_loading": "auto",
+                   "cfg_scale": 1.5, "duration_seconds": 30}
+        standard = memory_policy(request, prompt_tokens=120, free_gib=20, total_gib=24)
+        self.assertEqual(standard["batch_size"], 2)
+        self.assertEqual(standard["effective_cfg_scale"], 1.5)
+        self.assertEqual(standard["cache_seq_len"], 503)
+        low = memory_policy(request, prompt_tokens=120, free_gib=8, total_gib=24)
+        self.assertEqual(low["batch_size"], 1)
+        self.assertEqual(low["effective_cfg_scale"], 1.0)
+        protected = memory_policy({**request, "model_loading": "cpu-offload"}, prompt_tokens=120)
+        self.assertEqual(protected["batch_size"], 1)
+
+    def test_memory_status_parser_is_tolerant(self):
+        text = "0, 24576, 1024, 23552\n1, 8192, 8192, 0\ninvalid\n"
+        rows = parse_nvidia_smi_csv(text)
+        self.assertEqual(len(rows), 2)
+        self.assertAlmostEqual(rows[0]["free_gib"], 23.0, places=2)
     def test_normalizes_audio_request_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

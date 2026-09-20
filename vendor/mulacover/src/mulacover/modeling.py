@@ -381,13 +381,15 @@ class MuLaCover(PreTrainedModel):
                 nn.init.zeros_(peft_layer.cross_attn.gate_proj.weight)
                 nn.init.zeros_(peft_layer.cross_attn.gate_proj.bias)
 
-    def setup_caches(self, max_batch_size: int) -> None:
+    def setup_caches(self, max_batch_size: int, max_seq_len: int | None = None) -> None:
         dtype = next(self.parameters()).dtype
         device = next(self.parameters()).device
+        max_seq_len = int(max_seq_len or self.backbone.max_seq_len)
+        max_seq_len = max(128, min(max_seq_len, int(self.backbone.max_seq_len)))
 
         with device:
             for transformer, sequence_length in (
-                (self.backbone, self.backbone.max_seq_len),
+                (self.backbone, max_seq_len),
                 (self.decoder, self.config.audio_num_codebooks),
             ):
                 attention_modules = [
@@ -424,7 +426,7 @@ class MuLaCover(PreTrainedModel):
 
         self.register_buffer(
             "backbone_causal_mask",
-            _create_causal_mask(self.backbone.max_seq_len, device),
+            _create_causal_mask(max_seq_len, device),
             persistent=False,
         )
         self.register_buffer(

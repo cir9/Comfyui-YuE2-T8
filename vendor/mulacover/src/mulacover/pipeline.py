@@ -119,6 +119,8 @@ class MuLaCoverGenPipeline:
         config: MuLaCoverGenConfig,
         model_config: MuLaCoverConfig,
         lazy_load: bool = False,
+        memory_budget_gib: float = 23.5,
+        model_loading: str = "auto",
     ):
         self.paths = paths
         self.devices = devices
@@ -127,12 +129,16 @@ class MuLaCoverGenPipeline:
         self.config = config
         self.model_config = model_config
         self.lazy_load = lazy_load
+        self.memory_budget_gib = float(memory_budget_gib)
+        self.model_loading = str(model_loading)
         self._mulacover = None
         self._codec = None
         self._qwen = None
         self._qwen_tokenizer = None
         self._transcriptor = None
         self._cache_batch_size = None
+        self._cache_seq_len = None
+        self.memory_policy = None
         self.text_tokenizer.no_truncation()
         if not lazy_load:
             self.mulacover
@@ -199,6 +205,7 @@ class MuLaCoverGenPipeline:
             self._qwen_tokenizer = None
         if name == "mulacover":
             self._cache_batch_size = None
+            self._cache_seq_len = None
         gc.collect()
         device = self.devices[name]
         if device.type == "cuda" and torch.cuda.is_available():
@@ -347,6 +354,7 @@ class MuLaCoverGenPipeline:
         cfg_scale=1.5,
         max_audio_length_ms=DEFAULT_MAX_AUDIO_LENGTH_MS,
         symbolic_save_dir=None,
+        batch_size=None,
     ):
         lyrics = _read_text(inputs["lyrics"], "lyrics").lower()
         tags = _read_text(inputs["tags"], "tags").strip().lower()
@@ -364,7 +372,9 @@ class MuLaCoverGenPipeline:
             condition.save_midi(symbolic_save_dir)
         symbolic = condition.to_tensors()
         style = self._encode_style(tags)
-        batch_size = 2 if cfg_scale > 1 else 1
+        batch_size = int(batch_size if batch_size is not None else (2 if cfg_scale > 1 else 1))
+        if batch_size not in (1, 2):
+            raise ValueError("batch_size must be 1 or 2")
 
         def batch(tensor):
             return tensor.unsqueeze(0).repeat(batch_size, *([1] * tensor.ndim))
@@ -403,10 +413,49 @@ class MuLaCoverGenPipeline:
         frames = []
         try:
             model = self.mulacover
-            if self._cache_batch_size != batch_size:
+            free_gib = total_gib = None
+            if device.type == "cuda" and torch.cuda.is_available():
+                free, total = torch.cuda.mem_get_info(device)
+                free_gib, total_gib = free / 2**30, total / 2**30
+            prompt_tokens = int(model_inputs["input_pos"].shape[1])
+            frame_count = max(1, int(max_audio_length_ms) // 80)
+            budget = float(getattr(self, "memory_budget_gib", total_gib or 23.5))
+            mode = str(getattr(self, "model_loading", "auto"))
+            low_memory = mode == "cpu-offload" or budget <= 12 or (mode == "auto" and free_gib is not None and free_gib < 12)
+            requested_cfg = float(cfg_scale)
+            effective_cfg = 1.0 if low_memory and requested_cfg > 1 else requested_cfg
+            target_batch = 1 if low_memory else (2 if requested_cfg > 1 else 1)
+            if target_batch == 1 and batch_size > 1:
+                inputs = {key: (value[:1] if getattr(value, "ndim", 0) and value.shape[0] > 1 else value)
+                          for key, value in inputs.items()}
+                tokens = inputs.pop("tokens")
+                mask = inputs.pop("tokens_mask")
+                position = inputs.pop("input_pos")
+                batch_size = 1
+            cache_seq_len = min(
+                int(getattr(model.backbone, "max_seq_len", 8192)),
+                max(prompt_tokens + frame_count + 8, 128),
+            )
+            self.memory_policy = {
+                "mode": mode,
+                "batch_size": batch_size,
+                "requested_cfg_scale": requested_cfg,
+                "effective_cfg_scale": effective_cfg,
+                "cache_seq_len": cache_seq_len,
+                "prompt_tokens": prompt_tokens,
+                "audio_frames": frame_count,
+                "budget_gib": budget,
+                "free_gib": free_gib,
+                "total_gib": total_gib,
+                "low_memory": low_memory,
+                "reason": "低显存保护；单批次运行，CFG 已降为 1.0" if low_memory and requested_cfg > 1 else "标准双批次 CFG",
+            }
+            if self._cache_batch_size != batch_size or self._cache_seq_len != cache_seq_len:
                 self._cache_batch_size = None
-                model.setup_caches(batch_size)
+                self._cache_seq_len = None
+                model.setup_caches(batch_size, max_seq_len=cache_seq_len)
                 self._cache_batch_size = batch_size
+                self._cache_seq_len = cache_seq_len
             model.reset_caches()
             autocast = (
                 torch.autocast(device.type, dtype=dtype)
@@ -424,7 +473,7 @@ class MuLaCoverGenPipeline:
                         input_pos=position,
                         temperature=temperature,
                         topk=topk,
-                        cfg_scale=cfg_scale,
+                        cfg_scale=effective_cfg,
                         first_step=step == 0,
                         **inputs,
                     )
@@ -516,6 +565,8 @@ class MuLaCoverGenPipeline:
         device: Union[torch.device, Dict[str, torch.device]],
         dtype: Union[torch.dtype, Dict[str, torch.dtype]],
         lazy_load: bool = False,
+        memory_budget_gib: float = 23.5,
+        model_loading: str = "auto",
     ):
         paths = _resolve_paths(pretrained_path)
         return cls(
@@ -528,4 +579,6 @@ class MuLaCoverGenPipeline:
                 paths["mulacover"], local_files_only=True
             ),
             lazy_load=lazy_load,
+            memory_budget_gib=memory_budget_gib,
+            model_loading=model_loading,
         )

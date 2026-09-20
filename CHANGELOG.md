@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.6.7 - 2026-09-20
+
+- Add a visible VRAM status and cleanup action. The action clears allocator blocks owned by the service process, reports before/after NVIDIA memory, and leaves running isolated workers untouched unless the user explicitly cancels them.
+- Pass memory budget and loading mode through MuLaCover remix requests and resume actions. MuLaCover now adapts batch size to the current free VRAM, lowers CFG only in low-memory single-batch mode, and sizes KV caches to the requested song duration instead of always allocating the full 8192-token cache.
+- Record the selected memory policy in MuLaCover metadata and improve OOM recovery guidance in the WebUI.
+
 ## 1.6.6 - 2026-09-19
 
 - Add the requested Bilibili, YouTube, API signup, RunningHub, portable package and Hugging Face profile links to the studio header, public README and distribution documentation.
