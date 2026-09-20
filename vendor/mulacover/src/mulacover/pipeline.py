@@ -426,11 +426,11 @@ class MuLaCoverGenPipeline:
             effective_cfg = 1.0 if low_memory and requested_cfg > 1 else requested_cfg
             target_batch = 1 if low_memory else (2 if requested_cfg > 1 else 1)
             if target_batch == 1 and batch_size > 1:
+                tokens = tokens[:1]
+                mask = mask[:1]
+                position = position[:1]
                 inputs = {key: (value[:1] if getattr(value, "ndim", 0) and value.shape[0] > 1 else value)
                           for key, value in inputs.items()}
-                tokens = inputs.pop("tokens")
-                mask = inputs.pop("tokens_mask")
-                position = inputs.pop("input_pos")
                 batch_size = 1
             cache_seq_len = min(
                 int(getattr(model.backbone, "max_seq_len", 8192)),

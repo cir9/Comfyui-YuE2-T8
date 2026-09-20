@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.6.8 - 2026-09-20
+
+- 修复 MuLaCover 低显存单批次分支重复取出已弹出的张量，避免触发 `KeyError` 并确保动态显存保护实际生效。
+
 ## 1.6.7 - 2026-09-20
 
 - Add a visible VRAM status and cleanup action. The action clears allocator blocks owned by the service process, reports before/after NVIDIA memory, and leaves running isolated workers untouched unless the user explicitly cancels them.
