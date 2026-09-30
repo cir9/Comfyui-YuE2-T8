@@ -190,6 +190,8 @@ textarea { resize: vertical; }
 .history-error details { margin-top: 2px; }
 .history-error summary { color: #704653; cursor: pointer; font-weight: 700; }
 .history-error pre { max-height: 220px; overflow: auto; margin: 8px 0 0; padding: 10px; border-radius: 7px; color: #3e2930; background: rgba(255,255,255,.72); font: 11px/1.5 Consolas, "SFMono-Regular", monospace; white-space: pre-wrap; word-break: break-word; }
+#plan-abc-status { min-height: 1.5em; margin: 8px 0 0; overflow-wrap: anywhere; }
+#plan-abc-status.error { color: #a32644; }
 .comparison-result { border-top: 1px solid var(--line); padding-top: 12px; min-width: 0; }
 .failure-card p { margin: 9px 0 0; color: #4e596c; line-height: 1.65; }
 .failure-actions { justify-content: flex-start; }

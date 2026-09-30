@@ -11,13 +11,19 @@
   function draftKey() { return `remix-draft:${String(window.workbenchProjectId?.() || '__global__')}`; }
   function saveDraft() {
     const values = {};
-    for (const field of form.elements) if (field.name && field.type !== 'file') values[field.name] = field.value;
+    for (const field of form.elements) {
+      const shared = typeof field.matches === 'function' && field.matches('[data-generation-memory],[data-generation-loading]');
+      if (field.name && field.type !== 'file' && !shared) values[field.name] = field.value;
+    }
     savedValue(draftKey(), JSON.stringify(values));
   }
   function restoreDraft() {
     let values = {};
     try { values = JSON.parse(savedValue(draftKey()) || '{}'); } catch {}
-    for (const field of form.elements) if (field.name && field.type !== 'file' && values[field.name] !== undefined) field.value = values[field.name];
+    for (const field of form.elements) {
+      const shared = typeof field.matches === 'function' && field.matches('[data-generation-memory],[data-generation-loading]');
+      if (field.name && field.type !== 'file' && !shared && values[field.name] !== undefined) field.value = values[field.name];
+    }
     if (values.style_mode === undefined && ['topic','genre','instrument','mood'].some(key=>values[key])) styleMode.value = 'custom';
   }
   function switchProjectDraft() {

@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 from app.yue2_app import assistant_data as data
 from app.yue2_app.assistant_rules import engine
+from app.yue2_app.assistant_rules import yue2_abc
 from app.yue2_app.assistant_worker import Runner, execute
 from app.yue2_app.worker_common import JobContext
 
@@ -26,6 +27,28 @@ class AssistantTests(unittest.TestCase):
         path.mkdir(parents=True)
         (path / "status.json").write_text(json.dumps({"id": path.name, "kind": "assistant", "status": "running"}))
         return JobContext(path)
+
+    def test_abc_voice_marker_error_reports_line_actual_text_and_group(self):
+        abc = """X:1
+T:
+M:4/4
+L:1/32
+Q:1/4=120
+V: Vocal clef=treble name=\"Vocal Melody\" snm=\"Vocal\"
+V: Ins clef=treble name=\"Ins Melody\" snm=\"Inst.\"
+K:C
+V: Vocal
+C8 C8 C8 C8|
+V:Ins
+C8 C8 C8 C8|"""
+        with self.assertRaises(yue2_abc.AbcError) as caught:
+            yue2_abc.parse_abc(abc)
+        message = str(caught.exception)
+        self.assertIn("group 1, Ins", message)
+        self.assertIn("第 11 行", message)
+        self.assertIn("'V: Ins'", message)
+        self.assertIn("'V:Ins'", message)
+        self.assertIn("冒号后必须保留一个空格", message)
 
     def test_official_snapshot_and_no_comfy_import(self):
         self.assertEqual(engine.official_snapshot()["commit"], engine.SOURCE_COMMIT)

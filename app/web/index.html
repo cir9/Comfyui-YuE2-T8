@@ -258,9 +258,11 @@ This melody still waits for you</textarea></label>
         <textarea id="plan-abc" rows="20" spellcheck="false" aria-label="ABC 乐谱文本"></textarea>
         <div class="toolbar">
           <label class="check"><input id="plan-exact" type="checkbox" checked>精确恢复原计划（忽略文本框修改）</label><small class="meta">如需编辑下方 ABC，请先取消勾选；修改后会作为新版本重新生成。</small>
+          <button id="validate-plan-abc" type="button" class="ghost">校验当前 ABC</button>
           <button id="download-abc" class="ghost">下载 ABC</button>
           <button id="render-plan" class="primary" data-idle-label="渲染完整歌曲">渲染完整歌曲</button>
         </div>
+        <p id="plan-abc-status" class="meta" role="status" aria-live="polite"></p>
       </div>
     </section>
 

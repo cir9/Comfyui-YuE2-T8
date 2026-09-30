@@ -46,6 +46,18 @@ def fail(condition: bool, message: str) -> None:
         raise AbcError(message)
 
 
+def expected_line(lines: list[str], index: int, expected: str, context: str) -> None:
+    """Report the exact source line for strict native-dialect markers."""
+    if index < len(lines) and lines[index] == expected:
+        return
+    actual = "<文件结束>" if index >= len(lines) else repr(lines[index])
+    hint = "；冒号后必须保留一个空格" if index < len(lines) and lines[index].replace(" ", "") == expected.replace(" ", "") else ""
+    raise AbcError(
+        f"{context}：第 {index + 1} 行应为 {expected!r}，实际为 {actual}{hint}。"
+        "group 表示从 1 开始计数的 Vocal/Ins 双声部音乐块。"
+    )
+
+
 def key_accidentals(key: str) -> dict[str, int]:
     fail(key not in KEYS, f"Unsupported key {key!r}; use a standard major or minor K: field")
     count = KEYS[key]
@@ -182,7 +194,7 @@ def parse(text: str) -> Score:
         counts = []
         for name in VOICES:
             context = f"group {group}, {name}"
-            fail(cursor >= len(lines) or lines[cursor] != f"V: {name}", f"{context}: expected V: {name}")
+            expected_line(lines, cursor, f"V: {name}", context)
             cursor += 1
             voice = voices[name]
             fields = set()

@@ -799,6 +799,37 @@ $('#plan-form').onsubmit = async event => {
 
 $('#plan-exact').onchange = event => { $('#plan-abc').disabled = event.target.checked; };
 $('#plan-abc').disabled = true;
+function showPlanAbcStatus(message, failed = false) {
+  const status = $('#plan-abc-status');
+  status.textContent = message || '';
+  status.classList.toggle('error', failed);
+  if (!failed) return;
+  const match = String(message || '').match(/第\s*(\d+)\s*行/);
+  if (!match) return;
+  const textarea = $('#plan-abc'), line = Math.max(1, Number(match[1]));
+  const lines = textarea.value.split('\n');
+  const start = lines.slice(0, line - 1).reduce((length, value) => length + value.length + 1, 0);
+  const end = start + (lines[line - 1] || '').length;
+  textarea.focus();
+  textarea.setSelectionRange(start, end);
+  const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 20;
+  textarea.scrollTop = Math.max(0, (line - 3) * lineHeight);
+}
+async function validatePlanAbc() {
+  const button = $('#validate-plan-abc');
+  button.disabled = true;
+  showPlanAbcStatus('正在校验当前 ABC…');
+  try {
+    await api('/api/assistant/validate-abc', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({abc: $('#plan-abc').value, cot: formObject($('#plan-form')).cot})});
+    showPlanAbcStatus('校验通过：符合 YuE2 官方原生双声部子集。');
+    return true;
+  } catch (error) {
+    showPlanAbcStatus(error.message, true);
+    return false;
+  } finally { button.disabled = false; }
+}
+$('#validate-plan-abc').onclick = validatePlanAbc;
+$('#plan-abc').addEventListener('input', () => showPlanAbcStatus('ABC 已修改，请重新校验。'));
 window.importPlanAbc = (abc, badge = '外部导入谱 · 重新生成') => {
   const request = formObject($('#plan-form'));
   planState = {source: 'imported_abc', request: {style: request.style || '', lyrics: request.lyrics || '', cot: request.cot || 'full'}};
@@ -816,13 +847,16 @@ $('#render-plan').onclick = async () => {
   if (planState.source === 'imported_abc') {
     try {
       const request = {...formObject($('#plan-form')), abc: $('#plan-abc').value, candidates: 1};
-      await api('/api/assistant/validate-abc', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({abc: request.abc, cot: request.cot})});
+      if (!await validatePlanAbc()) return;
       await submit('generate', request, $('#plan-result'), $('#render-plan'), projectScope);
     } catch (error) { renderScopedFailure($('#plan-result'),error,projectScope); }
     return;
   }
   const exact = $('#plan-exact').checked; const request = {plan_dir: planState.plan_dir, exact, backend: 'torch-eager'};
-  if (!exact) Object.assign(request, planState.request, {abc: $('#plan-abc').value, candidates: 1});
+  if (!exact) {
+    if (!await validatePlanAbc()) return;
+    Object.assign(request, planState.request, {abc: $('#plan-abc').value, candidates: 1});
+  }
   try { await submit('render_plan', request, $('#plan-result'), $('#render-plan'), projectScope); }
   catch (error) { renderScopedFailure($('#plan-result'),error,projectScope); }
 };

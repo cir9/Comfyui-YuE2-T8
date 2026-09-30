@@ -2,6 +2,8 @@
 
 [中文](#中文说明) · [English](#english) · [模型仓库 / Model weights](https://huggingface.co/t8star/YuE2-Comfy) · [ComfyUI Registry](https://registry.comfy.org/nodes/yue2-t8)
 
+本项目已收录于社区维护的双语项目清单 [awesome-YuE](https://github.com/RevolutionLA/awesome-YuE)，感谢其维护者整理 YuE / YuE2 生态资源。
+
 ![YuE2 Music T8](icon.svg)
 
 ## 完整版整合包
@@ -65,6 +67,10 @@ YuE2 Music T8 把 YuE2-3B 完整歌曲生成接入 ComfyUI，并提供一个可�
 自动转谱可能有误差，默认旋律识别主唱；纯器乐可从真实候选乐器轨指定旋律，或手工修正。空轨明确标记，识别失败不会伪造空 MIDI；部分失败仍保存成功轨，ZIP 附状态说明，任务历史支持继续识别与打开结果。纠正识别 BPM 可利用原始时间事件，不重复运行模型。
 
 普通 MIDI 导出保留原 PPQ、速度变化、控制事件和编辑时序；生成副本另行对齐模型的十六分网格，最多 5000 格，原文件不变。BPM、力度、试听乐器及控制事件不保证精确控制生成音频，识别和弦也不等同原伴奏全部配器。编辑器导出的三份标准 MIDI 可用于现有原生 ComfyUI MuLaCover 条件节点；ABC/YuE2 转换属于后续阶段。
+
+### v1.6.9：ABC 报错定位与本地校验
+
+乐谱计划页新增“校验当前 ABC”。校验完全在本地执行，不调用付费 API；失败时会显示第几个 Vocal/Ins 双声部块、精确行号、期望的标记和实际行内容，并自动选中出错行。例如 `V:Ins` 会明确提示原生子集要求写成 `V: Ins`，冒号后保留一个空格。这里检查的是 YuE2 官方原生双声部子集，不代表对整个 ABC 标准作通用判断。
 
 ### v1.6.8：MuLaCover 动态显存与显存清理
 

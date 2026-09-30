@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import io
 import json
+import time
 import wave
 
 import mido
@@ -50,7 +51,9 @@ def assert_midi_boundaries(browser, url, output):
 
     page.route("**/api/workbench/midi/source", hold_source)
     page.evaluate("id=>{window.boundaryA=midiOpenAudio(id).catch(()=>{}).then(()=>window.boundaryADone=true);}", sources[0])
-    page.wait_for_timeout(200)
+    deadline = time.monotonic() + 5
+    while not held and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
     assert held
     page.evaluate("id=>{window.boundaryB=midiOpenAudio(id).then(()=>window.boundaryBDone=true);}", sources[1])
     page.wait_for_function("window.boundaryBDone")
@@ -83,7 +86,9 @@ def assert_midi_boundaries(browser, url, output):
     page.route("**/api/workbench/midi/documents/*/check", hold_check)
     page.route("**/api/jobs", reject_job)
     page.locator("#midi-generate").click()
-    page.wait_for_timeout(200)
+    deadline = time.monotonic() + 5
+    while not held_checks and time.monotonic() < deadline:
+        page.wait_for_timeout(50)
     assert held_checks
     page.locator("#midi-documents").select_option(second["id"])
     page.wait_for_function("id=>midiEditorState()?.id===id", arg=second["id"])
