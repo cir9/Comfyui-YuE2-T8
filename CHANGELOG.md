@@ -1,5 +1,318 @@
 # Changelog
 
+## 1.6.9 - 2026-09-30
+
+- ABC 原生子集校验失败时显示双声部 group、精确行号、期望标记与实际行内容；`V:Ins` 等仅缺空格的情况给出直接修正提示。
+- 乐谱计划页新增免费本地“校验当前 ABC”入口，失败后自动选中出错行，避免提交生成任务后才发现格式问题。
+- 修正重新编曲草稿覆盖全局显存加载方式的问题，低显存设置现在会在四个创作页面同步并在刷新后保持。
+- README 补充 awesome-YuE 社区生态清单链接与致谢。
+
+## 1.6.8 - 2026-09-20
+
+- 修复 MuLaCover 低显存单批次分支重复取出已弹出的张量，避免触发 `KeyError` 并确保动态显存保护实际生效。
+
+## 1.6.7 - 2026-09-20
+
+- Add a visible VRAM status and cleanup action. The action clears allocator blocks owned by the service process, reports before/after NVIDIA memory, and leaves running isolated workers untouched unless the user explicitly cancels them.
+- Pass memory budget and loading mode through MuLaCover remix requests and resume actions. MuLaCover now adapts batch size to the current free VRAM, lowers CFG only in low-memory single-batch mode, and sizes KV caches to the requested song duration instead of always allocating the full 8192-token cache.
+- Record the selected memory policy in MuLaCover metadata and improve OOM recovery guidance in the WebUI.
+
+## 1.6.6 - 2026-09-19
+
+- Add the requested Bilibili, YouTube, API signup, RunningHub, portable package and Hugging Face profile links to the studio header, public README and distribution documentation.
+- Keep the social and distribution links visible on narrow screens through the existing responsive wrapping layout.
+
+
+
+## 1.6.5 - 2026-09-19
+
+- Make the public MuLaCover manifest portable by replacing local absolute paths with model-root-relative paths.
+- Pin the installer to the final Hugging Face model tree after the manifest privacy fix.
+
+## 1.6.4 - 2026-09-19
+
+- Mirror the complete YuE2 style-training `regularizer-safe-v1` cache in `t8star/YuE2-Comfy`, including codec, offsets and metadata.
+- Add the root `MULACOVER_MODEL_MANIFEST.json` to the model repository so MuLaCover provenance and checksums are available after a clean download.
+- Pin the installer to the verified Hugging Face commit containing the new model structure.
+- Document the shared model tree and the three root manifests in the installation instructions.
+
+## 1.6.3 - 2026-09-19
+
+- Make the MIDI workspace use the full available width instead of leaving large side gutters.
+- Move the MuLaCover generation panel below the editor at medium window widths so the piano roll remains usable.
+- Add a real horizontal scroll area for long and zoomed piano-roll timelines.
+- Give audio-to-MIDI start, end and BPM inputs equal flexible widths so the BPM field is never clipped.
+
+## 1.6.2 - 2026-09-19
+
+- Keep the most recent audio selection when earlier uploads or asset reads finish late in the same MIDI document.
+- Reject generation preparation when the editor switches documents during a check, confirmation or snapshot response; retained fixed inputs remain available.
+- Export a requested MIDI role without expanding unrelated tracks or imposing their voice limits on the requested file.
+- Synchronize BPM and editor controls during undo/redo, and keep a valid active track when undo removes a newly added chord track.
+- Remove only exact matching failed-draft recovery snapshots after the owning page saves successfully, preserving other pages' different unsaved edits.
+- Add real-service browser checks for source ordering, document switches, actual tempo export, active-track transposition and shared-storage cleanup, plus a single-role export regression.
+
+## 1.6.1 - 2026-09-19
+
+- Prevent repeated audio-to-MIDI submissions while a document save is pending; failed submissions unlock retry.
+- Reset the saved source clip range and recognition BPM when choosing new music, keeping refresh behavior consistent with the displayed range.
+- Restore the original melodic channel when changing a percussion track back to melody or chords, including channel-bearing controller messages.
+- Keep failed drafts independent across browser tabs; recovering one snapshot removes only matching backups and retains other unsaved edits.
+- Name the source-audio player for assistive navigation and add real-browser regressions for role changes, source persistence, slow-save submissions and shared-storage recovery.
+
+## 1.6.0 - 2026-09-19
+
+- Add a project-scoped MIDI editor with real note/chord editing, role mapping, local WebAudio audition, undo, transposition, touch controls, standard MIDI export and persistent drafts.
+- Add independent audio-to-melody/chord/drums MIDI extraction using only transcription weights, with real progress, partial-result persistence, cancellation, retry and raw-event cache reuse.
+- Generate MuLaCover songs from immutable edited MIDI snapshots, retain prior completed audio across later extraction/failure/cancellation, and connect outputs to the asset library and existing voice conversion.
+- Preserve original PPQ, tempo and controller events in normal MIDI exports; explicitly confirm quantized model copies without modifying the original material.
+- Recover independent unsaved snapshots across reloads, separate conflict-copy operations from failed saves, protect published source references and add paginated document/archive/cache management.
+- Guard finite audio exports and apply one global peak gain before PCM24 saving to avoid clipping model outputs.
+- Validate actual portable native startup, generation, independent transcription, source artifact hashes and preservation of existing user projects/settings. The user confirmed both controlled 30-second samples sound normal; this listening acceptance is separate from waveform checks and limited to those samples.
+
+## 1.5.12 - 2026-09-18
+
+- Prevent duplicate paid assistant submissions before configuration/draft saves complete; wait before project changes and continue tracking submitted jobs when draft persistence fails.
+- Constrain asset purge to its approved preview, scan past protected trash batches and expose occupied waveform or zero-byte GC retries.
+- Preserve retryable job control records during partial Windows/manual or policy cleanup; reject directory junctions and mark partially cleaned results unavailable.
+- Discard stale training-project and style-model reads, align resized asset pages, open active training assets and persist model handoffs.
+- Translate the instrumental checkbox into explicit native no-vocal text conditions and the instrumental lyric marker (Issue #12); this remains model guidance.
+- Add optional MuLaCover style conditioning using the upstream empty-tag behavior (Issue #13), preserving legacy drafts and API defaults without promising identical arrangements.
+
+## 1.5.9 - 2026-09-17
+
+- Shorten atomic checkpoint staging directories and JSON temporary filenames so deeply nested reference-cover jobs fit the legacy Windows path limit without sacrificing complete-checkpoint publication or unique concurrent writes.
+- Keep final checkpoint names and manifests compatible with existing jobs; clean temporary JSON files when serialization or replacement fails.
+- Add storage regressions for the reported 262-character path, near-limit directories, cancellation and concurrent JSON writers, including the Windows CI job.
+- Fix the unanchored model-data ignore rule that omitted MuLaCover codec and torchtune Python sources from GitHub/Registry/code ZIPs; validate required sources in readiness and release archives (Issue #9).
+
+## 1.5.8 - 2026-09-16
+
+- Fix project asset pagination when one revision has multiple project roles, reject ambiguous voice booleans and empty pitch controls, and localize malformed request errors.
+- Keep invalid ABC recovery guidance visible, add copy confirmation, remove late assistant initialization overwrites, and make mobile asset pagination, keyboard entry and repeated control names accessible.
+- Exit the Windows launcher after a successful start so in-app updates can replace it; publish Registry packages only from immutable version tags whose complete Quality workflow passed.
+- Exclude development-only CI/tests from code update ZIPs, keep runtime verification read-only, and pin all release actions to reviewed commit SHAs.
+
+## 1.5.7 - 2026-09-16
+
+- Replace blocking browser alerts, confirmations and text prompts with accessible in-studio dialogs for project, model, cleanup and update actions.
+- Restore the latest project-scoped AI creation even after any number of later model connection tests by filtering tests before pagination.
+- Align the stable release tag with a fully passing Linux/browser and Windows launcher/update CI run.
+
+## 1.5.6 - 2026-09-16
+
+- Serialize job status updates across the service and worker so a last-moment cancel can no longer overwrite a committed result.
+- Recover the active job and project-scoped assistant result beyond the recent-task window; show the real queue total and hide non-exportable housekeeping tasks from export actions.
+- Page through every training run and project asset instead of silently stopping at 200 or 500 records; keep project tracks and linked assets bounded to 8 and 10 items per page.
+- Disable AI actions until the selected API credential or local GGUF is ready, surface model-list failures, disambiguate trained style models, and improve technical audio-component errors.
+- Add keyboard skip navigation, clearer mobile labels and compact non-project headers, plus Windows launcher version metadata and CI coverage.
+
+## 1.5.5 - 2026-09-16
+
+- AI 创作助手的新安装默认使用 32K 输出预算，云端与兼容接口允许设置到 262,144 Token，覆盖 220K 需求；实际可用值仍由模型和渠道限制。
+- 切换本地 GGUF 时独立恢复保守的 4K 输出预算，避免云端大额度超过本地上下文；界面同时说明费用和模型限制。
+
+## 1.5.4 - 2026-09-16
+
+- RVC 切片、音高提取、HuBERT 特征和训练轮次现在把实时 `x/y` 进度写入后台任务，离开页面后仍可在任务中心查看。
+- 完整包构建器强制包含 MuLaCover、HeartCodec、Qwen3 Embedding、SymbolicTranscriptor、示例模型与原生 ComfyUI MuLaCover 节点包，避免发布缺功能的“完整包”。
+
+## 1.5.3 - 2026-09-16
+
+- Keep asset-library and completed-job audio on the server during cross-workspace handoff instead of downloading the whole file into browser memory and uploading it again.
+- Add native ComfyUI nodes for YuE2 style training, trained LoRA selection and strength, RVC voice loading, RVC training and RVC song conversion.
+- Allow completed YuE2 training output to connect directly to song generation and completed RVC training output to connect directly to RVC conversion.
+- Preserve manual uploads while clearly tracking server-side audio and MIDI references across previews, transcription, RVC import, MuLaCover and voice conversion.
+
+## 1.5.2 - 2026-09-16
+
+- Require verified, separated vocals for RVC training and reject unreviewed or mixed material before GPU work starts.
+- Restrict YuE2 style training to complete songs or works of at least five seconds and derive train/validation lineage from immutable server metadata.
+- Persist project-scoped YuE2 training and MuLaCover drafts, restore archived projects, preview training sources and keep completed model controls stable while refreshing.
+- Restore the latest result for every project panel from the complete job store while returning compact task summaries without large stage-history arrays.
+- Archive generated ABC and MuLaCover MIDI files into the asset library and stream large job files with HTTP range support.
+- Recover stale updater transactions after a crashed process and include RVC and MuLaCover model setup in the unified installer.
+- Add a four-step first-run guide, correct mobile training layout and validate desktop, tablet and phone workflows in the browser smoke suite.
+
+## 1.5.1 - 2026-09-16
+
+- Accept `127.0.0.1`, `localhost` and IPv6 loopback aliases for browser POST requests when the port matches, preventing valid local pages from being rejected as cross-site requests.
+- Continue rejecting non-loopback origins, browser-extension origins and loopback pages on another port.
+
+## 1.5.0 - 2026-09-15
+
+- Add a project-scoped MuLaCover remix workspace for audio or MIDI conditioning, editable lyrics and structured style tags, transposition, deterministic seeds, live stages, playback, MIDI export and one-click handoff to voice conversion.
+- Run MuLaCover in the existing unified Python 3.12 runtime with lazy, sequential component loading, cooperative cancellation and GPU cleanup.
+- Add pinned model download and integrity checks for MuLaCover, HeartCodec, Qwen3 Embedding and the symbolic transcriptor.
+- Publish the separate `Comfyui-Mulacover-T8` native node package for in-process ComfyUI workflows without an HTTP bridge.
+
+## 1.4.21 - 2026-09-15
+
+- Restore the previously hidden creator and project links in the compact studio header.
+- Add direct, visible links to the GitHub source, ComfyUI Registry node, Hugging Face model repository, Bilibili creator page and YouTube channel.
+- Prevent older training-record requests from overwriting a newer model-manager refresh during rapid workspace switching.
+
+## 1.4.20 - 2026-09-15
+
+- Add a completed YuE2 model manager with three models per page, model details, equal-size actions and direct use, download, folder and path controls.
+- Export completed YuE2 training tasks as a usable `.safetensors` model package with a provenance manifest.
+- Hide export actions for internal tasks that do not produce files and label YuE2 training exports clearly.
+- Limit task history to ten records per page while preserving filters and navigation.
+
+## 1.4.19 - 2026-09-15
+
+- Let every YuE2 training song use a manually entered style, a saved style asset, or the shared fallback style.
+- Add a persistent completed-model panel with completed and selected steps, losses, rank, size, local path, model download, folder access and one-click use in song creation.
+- Identify byte-identical duplicate imports by both visible filenames before rejecting a train/validation split.
+
+## 1.4.18 - 2026-09-15
+
+- Persist each paid AI Assistant checkpoint as soon as it reaches the browser, so later ABC work cannot hide already generated lyrics or style text.
+- Restore the latest project-scoped Assistant task from the durable job store after workspace switches, reloads, and browser restarts, even when the draft did not record its job ID.
+- Recheck the current Assistant task whenever its workspace opens while preserving deliberate user edits.
+
+## 1.4.17 - 2026-09-15
+
+- Migrate older assistant drafts from the former downstream ABC default while preserving deliberate downstream choices saved by the new draft format.
+- Make YuE2 quick training (200 steps) the default and align its underlying advanced parameters with that preset.
+- Force training text fields to left-to-right, left-aligned entry so English style prompts cannot unexpectedly type from the right edge.
+- Preserve an invalid paid ABC response in the result and allow sending it unchanged to the score-planning prompt, with a visible validation warning at both ends.
+- Add a real Seedance ABC-generation acceptance check to the release verification record.
+
+## 1.4.16 - 2026-09-15
+
+- Change the Seedance provider default to `bytedance/doubao-seed-2.1-turbo` and expose an explicit Custom model choice with a dedicated model-ID input.
+- Generate ABC by default for new AI Assistant drafts and add a one-click “补写 ABC” action to results created with downstream score planning.
+- Let every YuE2 training song use pasted lyrics, a linked lyrics asset, the optional shared fallback, or an explicit instrumental flag.
+- Replace silent native form blocking with an inline validation and background-preprocessing status beside the training action.
+
+## 1.4.15 - 2026-09-15
+
+- Scope YuE2 training songs to the current project and refresh them whenever the training workspace opens, removing the stale empty list seen after adding assets.
+- Add “添加歌曲”, guided asset-library and direct-import paths; explain that an audio asset becomes trainable after it is added to the current project.
+- Skip byte-identical files during automatic updates, avoiding Windows launcher replacement failures when the unchanged native launcher is temporarily locked.
+
+## 1.4.14 - 2026-09-15
+
+- Make AI provider readiness visible before creation, with a direct API Key setup button and the selected provider's registration link.
+- Detect expired session-only credentials after restart, automatically expand channel settings, and prevent credential-less assistant jobs from entering the queue.
+- Add one-click API Key recovery to credential failure results, preserving keyboard focus and responsive layout across desktop, tablet and phone widths.
+
+## 1.4.13 - 2026-09-15
+
+- Gate RVC output from the separated source-vocal envelope so instrumental leakage cannot become sustained synthetic tones.
+- Save and restore Korean and other UTF-8 symbolic plans independently of the Windows system locale.
+
+## 1.4.12 - 2026-09-15
+
+- Complete the requested YuE2 training schedule but publish the checkpoint with the lowest song-disjoint validation loss.
+- Record both completed steps and the selected checkpoint step in model metadata.
+
+## 1.4.11 - 2026-09-15
+
+- Train YuE2 style LoRAs with reproducible 30-second semantic windows so long songs remain practical on 24GB GPUs.
+- Evaluate fixed start, middle and end windows while keeping song-disjoint validation groups.
+
+## 1.4.10 - 2026-09-15
+
+- Keep full-bundle build manifests location-independent and remove local build paths from verification logs.
+- Document all eight model directories, including the RVC and YuE2 style-training resources mirrored on Hugging Face.
+
+## 1.4.9 - 2026-09-15
+
+- Put Seed-VC and RVC octave controls directly in the reference-cover workflow, with clear female-song-to-male-voice and male-song-to-female-voice presets.
+- Preserve independent Seed-VC and RVC pitch choices, explain the effect of non-octave shifts, and show the selected pitch in completed-result descriptions.
+- Reject boolean values in numeric voice parameters before a task enters the queue.
+
+## 1.4.8 - 2026-09-15
+
+- Raise the contrast of rose section markers, primary buttons, completed workflow stages and completed history states to meet WCAG AA for normal-size text.
+- Keep backend-reported task progress visible while users switch workspaces or scroll, with direct access to the full task details.
+- Recheck the complete desktop and mobile workbench, fresh-start guidance, keyboard dialog flow, persistent asset membership and code-only update package.
+
+## 1.4.7 - 2026-09-15
+
+- Give every generated, historical, comparison, stem, RVC, training-preview and global audio player a distinct accessible name.
+- Give the read-only asset-content field an accessible name and remove unsupported selection semantics from ordinary workspace buttons.
+- Hide raw technical errors in partially completed multi-candidate result summaries, while retaining full details in task logs.
+- Extend real-browser accessibility checks to audio players, open-dialog contents, navigation semantics and partial-result failures.
+
+## 1.4.6 - 2026-09-15
+
+- Show whether each asset's current revision is already linked to the selected project, instead of leaving an idempotent “Add to project” action that appears to do nothing.
+- Keep “Add to project” available when an asset has a newer revision than the revision pinned in the project.
+- Extend real-browser regression coverage with a mixed set of linked and unlinked assets.
+
+## 1.4.5 - 2026-09-15
+
+- Keep every asset-card action inside its card at desktop widths, including the fourth “Add to project” action.
+- Reset the page position when switching workspaces and immediately remove stale result banners from unrelated pages.
+- Give dynamic asset dialogs accessible names and replace browser-default required-field messages with Chinese guidance.
+- Summarize technical failures consistently on live and history pages while preserving full details in task logs.
+- Treat completed update records from older releases as idle, and extend real-browser regression coverage with seeded projects, assets and a completed playable result.
+
+## 1.4.4 - 2026-09-14
+
+- Add an always-visible “All workspaces” menu to phone and tablet layouts, with current-workspace highlighting and full keyboard/dialog semantics.
+- Run a real Chromium UI smoke suite in GitHub Quality at desktop, tablet and phone viewports. Validate navigation, project focus, empty-filter recovery, disabled task actions, accessible control names, unique DOM ids, page overflow and console errors.
+- Upload desktop, tablet, phone and phone-menu screenshots plus the browser/service report as CI artifacts for every Quality run.
+- Exclude source-control, virtual-environment, package-cache and other development-only directories when applying an update from an unpacked source tree; retry short Windows file locks and keep rollback idempotent.
+
+## 1.4.3 - 2026-09-14
+
+- Remove the duplicate desktop navigation and compact the header on phone and tablet layouts so the active workspace appears earlier.
+- Keep the current project visible below 1024 px and provide a direct shortcut back to the project selector.
+- Clarify update and storage-cleanup actions, require confirmation before retention cleanup, disable task cancellation when no task is running, and summarize technical failures with details available on demand.
+- Add recovery actions for empty filtered asset and task lists, accessible names for previously ambiguous controls, and stronger contrast for supporting text.
+
+## 1.4.2 - 2026-09-14
+
+- Bind uploads, submissions, drafts, results and errors to the project that started them, even when the user switches projects before an asynchronous request finishes.
+- Keep YuE2 training, checkpoint previews and auxiliary jobs in separate UI channels; preserve pause/resume controls and send the exact selected checkpoint model into song creation.
+- Import ABC score assets into an editable score-plan draft and keep generated previews associated with their originating project.
+- Make the full workbench usable at narrow desktop and tablet widths with a scrollable top navigation, visible active workspace, stacked controls and automatically collapsed model settings.
+- Prevent stale project, asset and history requests from replacing newer selections. Clarify the local/API assistant description and the 1600-step training preset.
+- Keep the GitHub updater archive code-only. It excludes Python, models, GGUF files, user data and the private roadmap.
+
+## 1.4.1 - 2026-09-14
+
+- Make model settings reachable from every workbench page and simplify mobile navigation, tap targets, assistant setup and YuE2 training presets.
+- Keep project-scoped assistant, creation, score and cover drafts isolated across initial selection, switching, archiving, refresh and failed draft loads; assistant tasks now retain their project scope.
+- Add asset paging, editing, text revisions and direct transfer into song creation, score planning, reference-voice cover and RVC training while keeping training inputs independent from asset filters.
+- Require per-song lyrics or an explicit instrumental marker, preserve per-song style/lyrics choices, and reject duplicate audio blobs across training and validation splits.
+- Add training-run and checkpoint selectors, integrity-bound previews for paused checkpoints, accurate missing validation metrics and visible polling failures.
+- Add project rename/archive/remove actions, dynamic workflow progress, master-version selection and a verified audio-plus-manifest project export.
+- Add type, project, status and text filters to paged task history; refresh the active project after completed jobs and keep unrelated results off the current page.
+- Add the missing favicon and responsive/accessibility fixes. GitHub updater artifacts remain code-only and contain no Python runtime, models, GGUF files or user data.
+
+## 1.4.0 - 2026-09-14
+
+- Redesign the standalone WebUI as a connected music workbench while preserving the established light blue-gray and berry palette.
+- Add projects and a content-addressed asset library for songs, vocals, instrumentals, reference voices, lyrics, scores, works and trained models, with waveform previews and revision-pinned project links.
+- Add YuE2 AR LoRA song-style training from immutable train/validation snapshots, pinned Mothersuperior v4 tokenizer/NAR resources, MERT features, loss charts, safe pause/resume and a model library.
+- Pair trained AR adapters with the pinned v4 NAR companion during direct generation, record full model provenance, and generate playable short checkpoint previews inside the training page.
+- Require a recorded rights confirmation for YuE2 training snapshots and auto-promote completed audio and model outputs into the current project and asset library.
+- Keep generation, transcription, Seed-VC, RVC, YuE2 training and local GGUF in the single verified CPython 3.12.10 runtime; code-only updates still exclude Python, models and user data.
+
+## 1.3.1 - 2026-09-14
+
+- Allow ComfyUI users to select realistic memory budgets below 12 GiB or above 24 GiB.
+- Resume failed generation with the current memory budget instead of silently reusing the failed value.
+- Choose VAE decode tiles from the smaller of physical VRAM and the configured budget, with validated explicit overrides.
+- Reject experimental FP8 on HIP/ROCm and report CUDA/HIP accelerators without NVIDIA-only wording.
+- Warn before replacing local code, require repository quality checks, and fail Registry publishing when a version is not accepted.
+- Include the merged HIP/ROCm decode and Seed-VC compatibility fixes from PR #2.
+
+## 1.3.0 - 2026-09-12
+
+- Unify generation, transcription, Seed-VC, RVC and GGUF under CPython 3.12.10 / Torch 2.10.0 + CUDA 12.8; keep sequential subprocess model release.
+- Add an RVC training workbench with material preview/review, separation, preflight, progress/logs, cancellation/resume, paired checkpoints, indexes and a versioned voice library.
+- Add validated storage migration for training projects/cache, datasets and voices, preserving original backups and resumable migration state.
+- Convert existing songs directly or compare Seed-VC and RVC sequentially using a verified shared Demucs cache. Preserve playable successful candidates when the other backend fails.
+- Migrate legacy runtimes transactionally during updates, verify new service startup, and roll back code/runtime on failure. Retire the old code-only patch installer.
+- Package optional prebuilt/local SM120 FlashAttention wheels; standalone flash_attn is not enabled in song generation.
+- Verify GPU/CPU compatibility, long repeated-audio conversion, checkpoint recovery and browser workflows. Voice-quality benchmarks and physical low-VRAM GPU support are not claimed.
+
 ## 1.2.2 - 2026-09-12
 
 - Add a visible update control to the WebUI status card and automatically check the stable GitHub Release channel when the page opens.

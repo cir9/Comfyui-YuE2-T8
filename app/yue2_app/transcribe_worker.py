@@ -33,7 +33,7 @@ def main(argv=None) -> int:
         from transformers import AutoModel
 
         if not torch.cuda.is_available():
-            raise RuntimeError("转谱运行时未检测到 NVIDIA CUDA")
+            raise RuntimeError("转谱运行时未检测到 CUDA/HIP 兼容 GPU")
         source = within(root / "uploads", Path(request["source_path"]))
         if not source.is_file():
             raise FileNotFoundError(f"找不到音频：{source}")
@@ -52,22 +52,27 @@ def main(argv=None) -> int:
             ctx.update(stage, window=value.get("window"), windows=value.get("windows"), tokens=value.get("tokens"))
 
         ctx.update("transcribing")
+        audio_input, input_options = str(source), {}
+        if request.get("preset", "default") == "paper":
+            from .audio_decode import load_paper_audio
+            audio_input = load_paper_audio(source, max_seconds=request.get("max_seconds"))
+            input_options["sampling_rate"] = 24000
         result = model.transcribe(
-            str(source), output_dir=output, melody_only=request.get("melody_only", False),
+            audio_input, output_dir=output, melody_only=request.get("melody_only", True),
             dtype=request.get("dtype", "bf16"), preset=request.get("preset", "default"),
             max_seconds=request.get("max_seconds"),
             render_audio=bool(request.get("render_audio", False)),
             render_score=request.get("render_score", False),
-            render_parts=tuple(request.get("render_parts", ["mix"])), progress=progress,
+            render_parts=tuple(request.get("render_parts", ["mix"])), progress=progress, **input_options,
         )
         ctx.check_cancelled()
         abc_path = output / "score.abc"
         abc = abc_path.read_text(encoding="utf-8") if abc_path.is_file() else result.get("abc")
-        if request.get("melody_only", False) and (not abc or result.get("abc_error")):
+        if request.get("melody_only", True) and (not abc or result.get("abc_error")):
             raise RuntimeError(result.get("abc_error") or "转谱没有产生可用的旋律 ABC")
         timeline = None
         melody_abc = None
-        if not request.get("melody_only", False) and abc:
+        if not request.get("melody_only", True) and abc:
             # Derive the cover score from the same predictions, without a second
             # GPU pass or a lossy regex conversion of the complete score.
             import importlib
@@ -76,7 +81,7 @@ def main(argv=None) -> int:
                 output / "notation" / "song_melody.mid", melody_only=True)
             melody_abc = output / "score.melody.abc"
             melody_abc.write_text(melody_text, encoding="utf-8")
-        if request.get("workbench", not request.get("melody_only", False)):
+        if request.get("workbench", not request.get("melody_only", True)):
             ctx.update("preparing_workbench")
             timeline = prepare_workbench(root, source, output, result, ctx.check_cancelled)
         public = {
@@ -87,7 +92,7 @@ def main(argv=None) -> int:
             "midi": str(output / "transcription.mid") if (output / "transcription.mid").is_file() else None,
             "duration_seconds": result.get("duration_seconds"),
             "warnings": result.get("warnings", []),
-            "melody_only": request.get("melody_only", False),
+            "melody_only": request.get("melody_only", True),
             "timeline": str(timeline) if timeline else None,
             "melody_abc_path": str(melody_abc) if melody_abc else None,
             "diagnostics": result.get("diagnostics", []),
@@ -106,7 +111,7 @@ def main(argv=None) -> int:
             models=declared_model_provenance(root, ("SheetSage2", "MERT-v2-FullSong")),
             source={"audio": {"file": source.name, "sha256": sha256(source),
                               "bytes": source.stat().st_size}},
-            config={"melody_only": request.get("melody_only", False),
+            config={"melody_only": request.get("melody_only", True),
                     "dtype": request.get("dtype", "bf16"),
                     "preset": request.get("preset", "default"),
                     "max_seconds": request.get("max_seconds")},

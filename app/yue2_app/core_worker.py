@@ -3,10 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import shutil
-import uuid
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -31,20 +32,105 @@ def add_upstream(root: Path) -> None:
     sys.path.insert(0, str(source))
 
 
+VAE_CORE_FRAME_CHOICES = frozenset({128, 256, 512, 1024})
+
+
+def vae_core_frames_for(request: dict, physical_memory_gib: float | None = None) -> int:
+    """Choose a validated VAE tile from the smaller of device memory and the requested budget."""
+    explicit = request.get("vae_core_frames")
+    if explicit is not None:
+        if type(explicit) is not int or explicit not in VAE_CORE_FRAME_CHOICES:
+            choices = ", ".join(map(str, sorted(VAE_CORE_FRAME_CHOICES)))
+            raise ValueError(f"vae_core_frames 必须是以下整数之一：{choices}")
+        return explicit
+    budget = float(request.get("memory_budget_gib", 23.5))
+    if physical_memory_gib is None:
+        try:
+            import torch
+            device = torch.cuda.current_device()
+            physical_memory_gib = torch.cuda.get_device_properties(device).total_memory / 2**30
+        except Exception:
+            physical_memory_gib = budget
+    effective_memory_gib = min(float(physical_memory_gib), budget)
+    if request.get("model_loading", "auto") == "cpu-offload" or (request.get("model_loading", "auto") == "auto" and effective_memory_gib <= 12):
+        return 128
+    return 1024 if effective_memory_gib >= 20 else 512
+
+
 def create_pipe(root: Path, request: dict):
     from yue2 import YuE2Pipeline
 
     paths = model_paths(root)
     backend = request.get("backend", "torch-eager")
     budget = float(request.get("memory_budget_gib", 23.5))
-    return YuE2Pipeline.from_pretrained(
+    pipe = YuE2Pipeline.from_pretrained(
         str(paths["model"]), vae=str(paths["vae"]), device="cuda",
         memory_budget_gib=budget, backend=backend, quantization="none",
+        model_loading=request.get("model_loading", "auto"),
         offload_ar=bool(request.get("offload_ar", True)), local_files_only=True,
         nar_attention=request.get("nar_attention", "sdpa"),
         nar_query_chunk_size=int(request.get("nar_query_chunk_size", 256)),
         verify_hashes=bool(request.get("verify_hashes", False)), progress=False,
+        vae_core_frames=vae_core_frames_for(request),
     )
+    model_asset_id = str(request.get("style_model_asset_id", "")).strip()
+    if model_asset_id:
+        if backend == "vllm":
+            raise ValueError("歌曲风格模型当前只支持 PyTorch 后端")
+        from .asset_library import AssetLibrary
+        from .training_resources import resource_directory
+        from .yue2_adapter import inspect_adapter, file_sha256, merge_ar_adapter, merge_nar_companion
+        library = AssetLibrary(root)
+        asset = library.get_asset(model_asset_id)
+        if asset.get("kind") != "model" or asset.get("metadata", {}).get("model_type") != "yue2_ar_lora":
+            raise ValueError("所选资产不是 YuE2 歌曲风格模型")
+        supported_cot = asset.get("metadata", {}).get("supported_cot", ["off"])
+        if request.get("cot", "full") not in supported_cot:
+            raise ValueError("这个歌曲风格模型首期只通过了“直接生成”模式，请将规划模式设为直接生成")
+        adapter, _ = library.revision_file(model_asset_id)
+        nar = resource_directory(root) / "nar_lora_joint_v4.pt"
+        if not nar.is_file():
+            raise ValueError("这个风格模型需要 v4 NAR 配套资源，请先在训练工作台安装")
+        scale = float(request.get("style_model_scale", 1.0))
+        expected_ar = inspect_adapter(adapter, scale=scale)
+        expected_nar = {"sha256": file_sha256(nar), "bytes": nar.stat().st_size, "rank": 32,
+                        "merged_linears": 196, "io_replaced": True,
+                        "scaling_convention": "weight_plus_scale_times_B_matmul_A"}
+        original_loader, merged = pipe._load_model, {"done": False}
+        def apply_adapter(model):
+            if not merged["done"]:
+                ar_info = merge_ar_adapter(model, adapter, scale=scale)
+                nar_info = merge_nar_companion(model, nar)
+                if ar_info != expected_ar or nar_info != expected_nar:
+                    raise ValueError("歌曲风格模型运行时身份与加载前校验不一致")
+                merged["done"] = True
+            return model
+        if pipe.cpu_offload_enabled:
+            pipe.model_transform = apply_adapter
+        else:
+            def load_with_adapter(for_nar=False):
+                return apply_adapter(original_loader(for_nar=for_nar))
+            pipe._load_model = load_with_adapter
+        # Provenance participates in request/checkpoint identity before lazy load.
+        pipe.weights["style_adapter"] = expected_ar
+        pipe.weights["nar_companion"] = expected_nar
+    return pipe
+
+
+def instrumental_style(style: str) -> str:
+    """Translate a UI intent into native text conditions, without a hard no-vocal guarantee."""
+    # Remove common affirmative voice tags, including both shipped form defaults.
+    voice = r"\b(?:(?:warm|female|male|lead|solo|soft|clear|tender|gentle|expressive|breathy|airy|childlike|young|powerful|emotive|intimate)\s+)*(?:vocals?|voice|singing|choir|singer|soprano|alto|tenor|baritone)\b"
+    parts = []
+    for part in re.split(r"[,;\n]", style):
+        # An existing negative voice instruction already agrees with the intent.
+        if not (re.search(r"\b(?:no|without)\s+(?:\w+\s+){0,2}(?:vocals?|voice|singing|choir)\b", part, re.I)
+                or re.search(r"(?:无需?|不要|没有)(?:人声|演唱|歌声|合唱)", part)):
+            part = re.sub(voice, "", part, flags=re.I)
+            part = re.sub(r"(?:温暖|柔和|清晰|男|女|主唱|独唱)*(?:人声|演唱|歌声|合唱)", "", part)
+        if part.strip():
+            parts.append(part.strip())
+    return "Instrumental music only; no singing, no vocals, no spoken voice, no choir. " + ", ".join(parts)
 
 
 def generation_kwargs(request: dict, seed: int | None = None) -> dict:
@@ -54,6 +140,10 @@ def generation_kwargs(request: dict, seed: int | None = None) -> dict:
         "cot": request.get("cot", "full"),
         "seed": int(request.get("seed", 831001) if seed is None else seed),
     }
+    instrumental = request.get("instrumental")
+    if instrumental is True or (isinstance(instrumental, str) and instrumental.strip().lower() in {"on", "true", "1"}):
+        result["style"] = instrumental_style(result["style"])
+        result["lyrics"] = "[instrumental]"
     if request.get("abc"):
         result["abc"] = str(request["abc"])
     if request.get("cfg_scale") is not None:
@@ -178,8 +268,9 @@ def generate_one(pipe, ctx: JobContext, request: dict, destination: Path, seed: 
 def atomic_stage(destination: Path, writer) -> None:
     """Expose a checkpoint only after all its files and manifests are durable."""
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(destination.name + ".tmp-" + uuid.uuid4().hex)
-    temporary.mkdir()
+    # Keep staging on the same filesystem for atomic rename, but use a short
+    # reserved name so nested reference-cover jobs do not hit Windows MAX_PATH.
+    temporary = Path(tempfile.mkdtemp(prefix="s-", dir=destination.parent))
     try:
         writer(temporary)
         os.replace(temporary, destination)
@@ -461,15 +552,18 @@ def run_doctor(root: Path, ctx: JobContext, request: dict) -> dict:
 
     ctx.update("doctor")
     if not torch.cuda.is_available():
-        raise RuntimeError("自检失败：未检测到 NVIDIA CUDA")
+        raise RuntimeError("自检失败：未检测到 CUDA/HIP 兼容 GPU")
     if not torch.cuda.is_bf16_supported():
         raise RuntimeError("自检失败：GPU 不支持 BF16")
     verified = verify_bundle(root, progress=False)
     packages = {name: importlib.metadata.version(name) for name in
                 ("torch", "transformers", "huggingface-hub", "safetensors", "tiktoken", "soundfile")}
+    hip_version = getattr(torch.version, "hip", None)
     result = {
         "versions": packages,
         "torch_cuda": torch.version.cuda,
+        "torch_hip": hip_version,
+        "accelerator": f"ROCm/HIP {hip_version}" if hip_version else f"CUDA {torch.version.cuda}",
         "cuda_available": True,
         "bf16_supported": True,
         "gpu": torch.cuda.get_device_name(0),

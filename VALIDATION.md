@@ -1,4 +1,114 @@
+# YuE2 本地整合验证报告
+
+## v1.6.5 清单隐私修复（2026-09-19）
+
+- MuLaCover 清单已改为模型根目录相对路径，不再公开本机 `E:\` 目录；远端最终模型提交为 `94f6d64c1b53a1700e8f76c0c4faff8500be7780`。
+- 新安装器固定该提交，仍保留 YuE2 training regularizer-safe 缓存、MuLaCover 清单和全部模型文件。
+
+## v1.6.4 模型仓库结构补齐（2026-09-19）
+
+- 对本地 `models` 目录与 `t8star/YuE2-Comfy` 远端树逐文件对照：基础生成、MuLaCover、HeartCodec、Qwen Embedding、Seed-VC、Demucs、RVC、SheetSage2、MERT、SymbolicTranscriptor 和 YuE2-training 主文件均已存在且大小一致。
+- 补传 `YuE2-training/regularizer-safe-v1/codec.npy`、`offsets.npy`、`metadata.json`、`manifest.json` 以及根目录 `MULACOVER_MODEL_MANIFEST.json`；包含 README 和目录属性的最终远端提交为 `4d5165b9770255aee9151a626693fd09b87318e2`。
+- 安装脚本改为固定该提交，避免新安装仍下载旧模型树；没有上传 Python、运行时、用户资产、输出或完整整合包。
+
+## v1.6.3 MIDI 布局补丁（2026-09-19）
+
+- 当前 8189 服务在 1280、1440、1920px 视口分别检查：MIDI 工作区使用可用宽度；1280 / 1440px 时生成栏移到编辑器下方，中间编辑区分别为 830 / 990px。
+- 上传音乐提取区域的起点、终点、BPM 三个输入在 1280px 视口均为 316px，在 1440px 视口均为 369px，在 1920px 视口均为 529px。
+- 钢琴卷帘滚动区域在 100% 缩放和 400% 缩放均产生可滚动内容；三种视口实际设置 `scrollLeft` 后均成功移动，页面错误数为 0。
+- 本补丁只修改 `app/web/midi_editor.js`、`app/web/midi_editor.css`、`app/web/workbench.css`，不新增模型、Python、运行库或用户数据。
+
+## v1.6.2 十轮交叉审查（2026-09-19）
+
+- 独立子 Agent 完成十轮实际 JS / Chromium 审查；主代理使用隔离真实 HTTP 服务与 SQLite 复现网络竞态。确认并修复六项新边界问题：迟到音乐加载覆盖新选择、同项目切换文档后继续提交旧生成准备、无关复杂轨道阻止单角色导出、撤销 BPM 的显示不一致、撤销新增轨道后的活动轨失效、成功保存后残留同内容恢复备份。
+- 同源双页实测成功保存只清理精确匹配的旧备份；另一页面不同内容的失败草稿保留且恢复入口去重。导出用实际 Mido 回读，检查撤销/重做后的速度和单角色音符，不将模拟响应称为真实模型推理。
+- 原有十一工作区与十九个浏览器场景继续覆盖；新增慢请求、实际选音移调、生成准备隔离和双页恢复清理回归加入 CI。独立检查包括手机界面、快捷键作用范围、项目隔离、破损 JSON 备份、取消与部分结果、裁剪控制事件。
+- 本轮不调用付费 API，不重复生成/识别模型或人耳音质验收。用户原始素材、失败成果、不同草稿和固定版本保留；更新包只含代码，统一 Python 与模型继续复用。
+
+## v1.6.1 十轮交叉审查（2026-09-19）
+
+- 主代理与独立子代理各完成十个明确检查轮次，覆盖新手入口、MIDI 导出、项目持久化、跨页响应、音频转谱、取消/部分失败、固定版本生成、素材清理、手机交互及自动更新。
+- 实际隔离服务 / SQLite / Chromium 复现并修复：慢保存时重复转谱提交、换音乐后恢复旧提取范围/BPM、旋律/鼓组用途往返后错误鼓通道、多标签失败草稿被另一标签清除。另补原曲播放器的可访问名称。
+- 导出 MIDI 实际用 Mido 读取，确认导入通道 5 的音符和 CC64 在用途往返后均恢复通道 5；新源范围/BPM 保存后刷新一致；390px 实际触摸编辑与立即下载通过。
+- 多标签实际验证失败标签关闭后仍可恢复，恢复精确清除原快照但保留另一标签不同的新草稿。上述四条真实浏览器回归已加入 GitHub UI 检查。
+- 本轮不重复调用歌曲生成/识别模型或付费 API；模型执行的故障状态在隔离接口中模拟。音质结论沿用前一版本已接受的两份样例，不将静态审查或接口模拟称为重新完成 GPU 音质验收。
+
+## v1.6.0 MIDI 编辑器与独立转谱验证（2026-09-19）
+
+- 统一 CPython 3.12.10 / Torch 2.10.0+cu128，RTX 5090 Laptop 24 GiB。全套 272 项测试：269 通过、3 跳过；JavaScript 语法检查通过。真实浏览器覆盖 11 个工作区、19 项场景，以及桌面、平板、手机、触摸编辑、保存失败恢复、并发冲突复制、原曲提取和历史重试；不将模拟 IME 事件称为所有实物输入法实测。
+- 标准 MIDI Type 0/1、原 PPQ、变速、控制事件、同音重叠、损坏输入、长度与力度编辑、和弦和移调均有读取 / 导出及实际交互证据。生成固定版本快照，活动任务期间刷新或继续编辑不改变已提交输入。
+- 真实只装 YourMT3 / 五个 ChordNet 的隔离服务无需 API Key 或生成权重完成转谱。私有和弦权重故障验证部分成果下载 / 入库及真实按钮重试；35 秒器乐整首没有被截成 30 秒，120 个候选乐器音符可实际指定为旋律。纯鼓、静音和坏文件分别保留真实状态，失败不伪装为空轨。
+- 同一歌词、曲风和两个种子实际生成两份 30 秒对照，只修改旋律 MIDI 的八度；条件确实改变，原快照不变。峰值分配实测 13.709 GiB、完成后 0.0089 GiB。音频为 48 kHz 双声道，有效样本与防削波导出检查通过；这些检查不代表人耳音质验收。
+- 新完整包在独立目录使用自己的原生 EXE、唯一 Python 和包内模型冷启动，实际 UI 生成任务 `20260919-041430-98312e24`，5 秒上限按官方 80ms 帧规则得到 4.96 秒双声道成品；刷新恢复文档及播放器。随后独立转谱任务 `20260919-041639-5277f5bb` 完成三类合法结果并持久保存。
+- 现有 8189 服务代码更新到 1.6.0，原有项目、资产计数与项目元数据不变，私有设置哈希不变。完整包与现有服务的代码逐文件对照更新 ZIP，包内只有一个 Python；GitHub 代码更新附件不包含 Python、模型、用户数据或本地 roadmap。
+- 人耳验收通过：用户明确反馈两份同条件 30 秒样例“两个都正常”；结论仅限这两份歌曲，不能外推所有显卡、任意音乐的自动转谱准确率。验收记录与正式公开发布分别核对，ABC / MIDI 与 YuE2 转换为后续阶段。
+
+## v1.5.0 MuLaCover 重新编曲验证（2026-09-15）
+
+- 固定下载并校验 MuLaCover、HeartCodec-oss、Qwen3-Embedding-0.6B 与 SymbolicTranscriptor 四组组件；主模型和 HeartCodec 的全部索引分片均存在，转谱组件包含 YourMT3 检查点和五个和弦模型。
+- 使用完整整合包、RTX 5090 Laptop 24GB、统一 CPython 3.12.10 / Torch 2.10.0+cu128 / NumPy 1.26.4，从现有 139.9 秒完整歌曲提取旋律、和弦与鼓组，并生成任务 `20260915-231843-5a9c9c96`。任务经过转谱、曲风编码、375 步生成和解码，约 126 秒完成。
+- 成品为 30.0 秒、48 kHz 双声道 FLAC，全部采样有限，peak 0.4500、RMS 0.06489、非静音采样比例 99.38%；旋律、和弦、鼓组三份 MIDI、元数据和音频均通过本地文件接口返回 HTTP 200，结果自动登记到资产库。
+- 实测首先发现 YourMT3 的 NumPy 1.x/2.x 内部模块名不兼容，修复受限反序列化别名后用同一请求重跑成功；失败任务仍保留在历史页并可重试。
+- 原生 `Comfyui-Mulacover-T8` 不调用 HTTP 服务。真实节点包装链使用模型加载、MIDI 条件、曲风标签和一体化生成节点，产出 4.96 秒、48 kHz 双声道音频；完成后 GPU 回到约 132 MiB 基线占用。
+- 浏览器验收覆盖桌面和 390×844 手机布局、模型就绪提示、音频预览、资产库“保留旋律重新编曲”跨页发送、项目草稿跨页恢复、结果试听和历史分页。发布源码 168 项自动测试通过，原生节点八个映射、工作流 JSON、Python 编译与 JavaScript 语法检查通过。
+
+## v1.4.17 AI 作谱与训练默认值验证（2026-09-15）
+
+- 使用贞贞平价小屋和 `bytedance/doubao-seed-2.1-turbo`，对 v1.4.16 用户实际生成的完整中文歌词和曲风执行“仅补写 ABC”。任务 `20260915-114805-77eafcb3` 只产生 1 次付费模型请求，531.581 秒完成。
+- 返回 ABC 共 2,931 个字符，包含 6 个顺序一致的歌词段落、32 小节 Vocal 与 32 小节 Ins；Vocal 267 个音符与 32 个和弦，Ins 269 个音符。服务端原生 YuE2 子集校验和独立 `/api/assistant/validate-abc` 复验均通过，标称谱面时长 106.667 秒。
+- 旧项目草稿被确认仍保存 v1.4.15 的“交给下游 YuE2 规划”值。新草稿格式执行一次迁移到 LLM 作谱默认值，并记录默认值版本；用户之后主动选择下游规划时不会被覆盖。
+- 自动测试覆盖校验失败的付费 ABC：歌词、曲风和最后一版 ABC 同时保留，失败原因显示在 ABC 输入框上方，并允许下载、编辑、单独重试或原样发送到乐谱计划的 ABC 提示词框；目标框标为“未校验导入谱”，真正生成时再校验。浏览器同时验证 200 步训练默认值及英文曲风输入固定从左侧开始。
+
+## v1.4.0 音乐工作台与 YuE2 风格训练验证（2026-09-14）
+
+- 真实训练资源：固定 `Mothersuperior/yue2-mothersuperior-realaudio-tokenizer-v4` 提交 `f2278a2e005dc4ecc421c53a0929f62b3aeb2280`，校验 3 个文件共 413,810,275 字节。清单记录每个 URL、字节数和 SHA-256；断点下载完成后再次逐文件校验。
+- 公版素材：从 Wikimedia Commons 下载 Bach《Goldberg Variations: Aria》和 Chopin《Berceuse》的公开领域录音，各取 12 秒无损 PCM 片段。通过真实浏览器导入、波形、试听、HTTP Range/ETag、项目关联和固定版本快照。
+- 真实预处理：快照 `c17787ce11d54d618d77833e9f9e4532` 含两首不同曲目、24 秒音频及独立训练/验证集合；MERT 与 v4 tokenizer 预处理完成，数据身份为 `0fbca0…`。
+- 真实 BF16 LoRA：训练任务 `20260914-161437-834bc0e7` 完成 1 步 rank-8 AR LoRA，训练 loss 5.876454、验证 loss 5.994681；模型资产 34.9 MB，自动登记到资产库。
+- 真实检查点试听：任务 `20260914-161545-27dd9a19` 校验并合并 AR LoRA、196 个 v4 NAR projection 及完整输入/输出层，生成 2.5587 秒、48 kHz 双声道有限音频；端到端 24.9 秒，峰值 GPU 约 9.2 GiB。
+- 确定性暂停/恢复：连续 3 步训练与第 1 步安全暂停后恢复至第 3 步的每步训练/验证 loss 完全一致；模型元数据相同，所有 tensor 逐值相同，规范内容 SHA-256 同为 `853a0d46d5d2bcfbb138f493e29a6d89328a8b136ac42d6929e8d292f2b531f5`。Safetensors 容器原始字节因元数据映射顺序不同，不作为错误的权重差异判断。
+- 工作台浏览器验收覆盖项目、资产库、训练、动态跨页发送、桌面与 390 px 布局。上传后可直接试听，训练结果与试听保留在当前页，控制台无错误且页面无横向溢出。
+- 发布源码 137 项自动测试通过，1 项无模型代码仓的预期跳过；JavaScript 语法、Python 编译和 Git 空白检查通过。
+- 完整包使用唯一 `runtime/python.exe`；生成、转谱、Seed-VC、RVC、YuE2 训练和本地 GGUF 均在该 Python 的串行子进程中运行。GitHub 代码更新包禁止 Python、模型、GGUF、用户资产和本地 `roadmap.md`。
+
+训练样例验证实现、检查点和生成链路，并不证明任意音乐数据、步数或 LoRA rank 都能获得理想风格。首期适配器只开放已验证的 `cot=off` 直接生成；用户需要用固定提示、种子和完整歌曲进行最终听感 A/B。
+
+## v1.3.0 发布验证（2026-09-13）
+
+- 显存预算回归：实际浏览器捕获 8 条提交路径（创作、计划、精确恢复、编辑渲染、导入 ABC、旋律重制和参考翻唱），验证跨页同步、刷新保留、非法值拦截及 390px 布局。后端测试覆盖 8 / 16.25 / 32 GiB 从入队记录到管线构造参数的传递；此项没有声称实体小显存 GPU 生成通过。
+- 高音排查：用户指出男声音色的气声、高音及自然长歌三项 RVC 输出崩坏。保持原调改用 FP32 未解决高音问题；关闭检索并明确降八度后的三项对照，用户反馈“降低八度后声音都正常了”。该反馈仅覆盖这三项参数调整版本，原调失败样本保留，其他项目不据此视为人工通过。
+- 音高控制回归：同一真实 GPU 对比任务中，Seed-VC 保持 0 半音、RVC 使用 -12 半音，两个子进程的成品记录与设置一致；两套已完成的 100 轮音色补充音域统计时复用原权重、索引和音色 ID。界面验证涵盖独立参数提交、当前/历史结果标注、390px 布局。音域统计来自训练连续 F0，不是模型能力边界。
+
+目标设备：RTX 5090 Laptop 24GB，Windows，统一 CPython 3.12.10、Torch 2.10.0+cu128、NumPy 1.26.4、Transformers 4.57.6。以下为发布候选的已完成验证。包含运行时和七组基础模型的实际完整包已构建并冷启动验证；完整包保留本地，GitHub 仅分发代码与自动更新附件。
+
+- 清洁统一环境：120 项锁定依赖及浏览器/FFmpeg 探测；真实 GPU 歌曲生成、Seed-VC、转谱及渲染通过。发布源码的 111 项自动测试全部通过，JavaScript 与 PowerShell 语法检查通过，统一环境按发布依赖清单重新校验通过。
+- 本地 GGUF：歌词/曲风/有效 8 小节 ABC 与真实浏览器跨页发送通过；另一份样例 ABC 无效，保留文本，未降低谱面校验要求。
+- RVC：真实 GPU 训练取消/续训、推理混音；CPU v1/48k 与 v2/40k 训练/续训；重复完成注册复用同一音色；目录迁移后继续训练通过。这些少量轮次样例验证流程，不证明成熟音色质量。
+- 公开数据正式训练：CSD 干声 20 分 41 秒、14 个文件，RVC v2 / 48k / RMVPE 完成 100 轮，实际批次为 6，共 2777.30 秒（46 分 17 秒），生成推理模型、匹配索引和试听样例并通过登记校验。测试歌曲按歌曲 ID 留出，两个调性同时排除；测试权重与录音不随发布包分发。音质比较另行记录。
+- Seed/RVC 同曲对比：真实 12 秒以及重复拼接的 180 秒输入均完成两路 48kHz 音频；共用分轨缓存；恢复后的成品 SHA256 与原结果一致。重复拼接长音频不是自然长歌音质测试。
+- 180 秒转换在每个推理子进程 4 GiB Torch 分配器上限下通过，Seed 峰值 allocated 3.152 GiB。此限制不覆盖所有 CUDA 分配或 WDDM，也不证明实体 4/6GB 显卡或整首 YuE2 生成适用。
+- 真实训练 OOM：在 3 GiB Torch 分配器限制下实际触发两次 CUDA OOM，批量 6→3→1，从第 3 轮检查点续训并完成第 4 轮，注册音色成功。总耗时 111.97 秒；这是 RTX 5090 上的分配器限制测试，不是实体 3GB 显卡测试。
+- 完整包：使用包内唯一的 `runtime/python.exe` 完成依赖、浏览器/FFmpeg 和七组模型校验；原生 EXE 在独立端口 8198 冷启动，页面和 ComfyUI 客户端连接通过。Python 搜索路径只指向该包。
+- 便携运行库：补齐经过微软签名与哈希校验的 VC++ x64 DLL，版本与 Python 已携带的 DLL 一致。新进程实际加载的 `MSVCP140.dll` 位于包内，统一组件、浏览器及 FFmpeg 检查通过；安装和完整包构建均校验这些文件，更新器也会识别其版本变化。这不是全新 Windows 虚拟机实测。
+- 浏览器：上传试听、当前页/历史双结果、失败保留音频、下载/导出、直接换声、训练预检/进度及迁移通过；显示用双路音频夹具与真实双路 GPU 验证分开记录。
+- 更新：旧版到新统一环境、注入新服务启动失败后回滚、仅模型更新复用环境通过。
+- FlashAttention 2.8.3：社区轮子及本地 SM120 编译轮子各 12 项 GPU 算子检查通过；当前 YuE2 未接入独立 flash_attn，不宣称整曲加速。
+
+本页记录功能与环境验收。公开素材的跨歌手、音域、气声及自然长歌对比，以及说话人相似度、歌词识别、DNSMOS 和人工盲听状态，见发布附件 [RVC_EVALUATION.md](https://github.com/T8mars/Comfyui-YuE2-T8/releases/download/v1.3.0/RVC_EVALUATION.md)。测试录音和测试音色不随发布包分发；不把信号指标写成主观音质排名或低显存硬件承诺。
+
+## 历史验证记录
+
+以下保留旧版本在当时环境的结果与交付状态，不代表当前状态。
+
 # YuE2 Music T8 validation
+
+## 2026-10-03 fork / upstream merge validation
+
+- Merged upstream `main` at `9b20daf` into `transcription-first`, retaining the SheetSage2 original-time waveform, piano roll, chord audition and ABC handoff alongside the upstream MIDI editor, training, asset library and MuLaCover workspaces.
+- Preserved upstream melody-only API defaults and paper-preset audio decoding; the fork preview explicitly requests full transcription. Job audio now uses the upstream shared range/HEAD streaming implementation.
+- Python regression: 281 tests, 278 passed and 3 environment skips. All 578 tracked/new Python sources parsed; all WebUI JavaScript syntax checks and the integration diff whitespace check relative to upstream passed. The imported upstream vendor sources retain their existing whitespace warnings.
+- Full browser smoke passed at desktop, tablet and phone sizes with no page errors, including upstream MIDI race/recovery checks. Added preview checks for chord/MIDI audition, original audio playback, pause on workspace switch, reload recovery, history reopening, ABC handoff and 390px overflow.
+- Tests used temporary dependencies under ignored cache and an isolated service with synthetic media. Actual GPU inference, model upgrades and subjective audio quality were not validated; the installed service was not restarted.
 
 Validation date: 2026-09-11. Host: Windows, NVIDIA GeForce RTX 5090 Laptop GPU (24 GB). Historical results below are version-specific.
 

@@ -46,3 +46,40 @@ Windows distribution. Its packaged license notices remain in that runtime.
 CUDA runtime libraries copied from the existing bundled CUDA 12 environment
 remain governed by NVIDIA's original redistribution terms; no Torch code is
 imported into the assistant worker for this purpose.
+
+
+RVC training and inference code is vendored from
+https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI
+at commit 81eed5e8f68b6bed1789f682fe78cdd324495afc, MIT;
+see vendor/rvc/LICENSE, UPSTREAM.json and PATCHES.json for attribution and local changes.
+RVC base asset provenance and hashes are recorded in app/yue2_app/rvc_assets.json.
+
+Optional FlashAttention wheels in the full bundle derive from
+https://github.com/Dao-AILab/flash-attention (BSD-3-Clause), version 2.8.3,
+commit 060c9188beec3a8b62b33a3bfa6d5d2d44975fab. The multi-architecture wheel is
+published by https://github.com/mjun0812/flash-attention-prebuild-wheels;
+the separate SM120 wheel was compiled locally. Bundle extras include the
+upstream license and build/verification provenance. They are not enabled by default.
+
+Microsoft Visual C++ x64 runtime 14.42.34438.0 is redistributed unmodified from
+Visual Studio Community 2022's `VC/Redist/MSVC` directory, under its original
+Microsoft Software License Terms, not this project's MIT license. Microsoft
+signatures and SHA-256 hashes were checked; see `vendor/msvc-runtime/manifest.json`.
+The installer places these DLLs beside the bundled Python executable. It does
+not install another Python or modify the Windows system runtime.
+Redistribution list: https://learn.microsoft.com/en-us/visualstudio/releases/2022/redistribution
+License terms: https://visualstudio.microsoft.com/license-terms/vs2022-ga-community/
+
+Optional YuE2 song-style training uses three hash-pinned resources from
+Mothersuperior. `tokenizer_head_joint_v4.pt` and `nar_lora_joint_v4.pt` are from
+https://huggingface.co/Mothersuperior/yue2-mothersuperior-realaudio-tokenizer-v4
+at commit `f2278a2e005dc4ecc421c53a0929f62b3aeb2280`.
+`minted_regularizer_pack.pt` is from the Mothersuperior/yue2-minted-corpus
+dataset at commit `5d00559c3daa5cfb7a61fbe32158c8c08f9b5f35`.
+The source repositories declare CC BY-NC 4.0; their non-commercial and
+attribution requirements remain applicable. Exact URLs, sizes and SHA-256
+values are recorded in `app/yue2_app/yue2_training_assets.json`.
+
+The WebUI bundles Bootstrap Icons 1.13.1. Bootstrap Icons is Copyright (c)
+2019-2025 The Bootstrap Authors and licensed under MIT. The full license is at
+`app/web/vendor/BOOTSTRAP-ICONS-LICENSE.txt`.

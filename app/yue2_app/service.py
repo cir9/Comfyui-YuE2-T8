@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import mimetypes
 import math
@@ -31,19 +32,26 @@ from .config import (
     ensure_layout,
     runtime_ready,
 )
-from .io import atomic_json, public_job, within
-from .retention import RetentionManager
+from .io import atomic_json, json_file_lock, public_job, within, remove_job_payload
+from .retention import RetentionManager, _tree_size
 from .settings import model_directory, save_model_directory, settings_info
+from .memory import clear_current_process_cuda, memory_snapshot
 from . import assistant_data
 from . import updater
+from .asset_library import AssetLibrary
 
 CREDENTIALS = assistant_data.Credentials()
 ASSISTANT_KINDS = {"assistant"}
 
-TERMINAL = {"complete", "failed", "cancelled"}
+TERMINAL = {"complete", "failed", "cancelled", "paused"}
 CORE_KINDS = {"generate", "plan", "render_plan", "semantic", "synthesize", "decode", "doctor"}
 TRANSCRIBE_KINDS = {"transcribe"}
 VOICE_KINDS = {"voice_convert"}
+RVC_KINDS = {"rvc_import", "rvc_separate", "rvc_train", "rvc_model_import", "rvc_model_export", "rvc_storage_move"}
+TRAINING_KINDS = {"yue2_training_assets", "yue2_prepare", "yue2_train", "yue2_preview", "workbench_migrate"}
+MULACOVER_KINDS = {"mulacover_remix"}
+MIDI_KINDS = {'midi_extract'}
+PREVIEW_KINDS = {"yue2_preview"}
 WORKFLOW_KINDS = {"reference_cover"}
 GENERATION_KINDS = CORE_KINDS - {"doctor"}
 JOB_ID_PATTERN = re.compile(r"\d{8}-\d{6}-[0-9a-f]{8}")
@@ -73,9 +81,20 @@ def job_log_text(job_id: str) -> str:
     if not JOB_ID_PATTERN.fullmatch(job_id):
         raise ValueError("无效的任务 ID")
     path = within(LOGS, LOGS / f"{job_id}.log")
-    if not path.is_file():
+    directory = job_directory(job_id)
+    stages = directory/'artifacts/stages'
+    children = [*stages.glob('*/worker.log'), *stages.glob('*/artifacts/stages/*/worker.log')]
+    paths = ([path] if path.is_file() else []) + sorted(children,key=lambda p:p.stat().st_mtime)[-4:]
+    if not paths:
         raise FileNotFoundError("这个任务还没有生成日志")
-    return path.read_bytes()[-256 * 1024:].decode("utf-8", errors="replace")
+    chunks = []
+    for entry in paths:
+        if entry != path:
+            entry = within(directory,entry)
+        with entry.open('rb') as stream:
+            stream.seek(max(0,entry.stat().st_size-48*1024))
+            chunks.append(f'[{entry.name if entry==path else entry.relative_to(directory).as_posix()}]\n'+stream.read(48*1024).decode('utf-8',errors='replace'))
+    return '\n\n'.join(chunks)
 
 
 def acquire_instance_lock(root: Path):
@@ -108,6 +127,22 @@ def is_loopback_host(authority: str) -> bool:
             and (parsed.hostname or "").lower() in {"127.0.0.1", "localhost", "::1"})
 
 
+def is_matching_loopback_origin(origin: str, host: str) -> bool:
+    """Accept loopback aliases on the same port while rejecting other origins."""
+    try:
+        parsed_origin = urllib.parse.urlsplit(origin)
+        parsed_host = urllib.parse.urlsplit("//" + host)
+        if parsed_origin.scheme.lower() != "http":
+            return False
+        origin_port = parsed_origin.port or 80
+        host_port = parsed_host.port or 80
+    except ValueError:
+        return False
+    return (is_loopback_host(parsed_origin.netloc)
+            and is_loopback_host(host)
+            and origin_port == host_port)
+
+
 def _request_strings(value):
     if isinstance(value, str):
         yield value
@@ -125,8 +160,12 @@ def retention_references(requests, outputs: Path = OUTPUTS,
     uploads = uploads.resolve()
     protected_jobs: set[str] = set()
     protected_uploads: set[str] = set()
+    from .library_cleanup import strings
     for request in requests:
-        for value in _request_strings(request):
+        for value in strings(request):
+            if JOB_ID_PATTERN.fullmatch(value):
+                protected_jobs.add(value)
+                continue
             try:
                 candidate = Path(value).expanduser().resolve()
             except (OSError, ValueError):
@@ -171,7 +210,7 @@ def terminate_recorded_worker(status: dict, job_id: str) -> None:
         return
     script = (
         f"$p=Get-CimInstance Win32_Process -Filter 'ProcessId={pid}' -ErrorAction SilentlyContinue;"
-        f"if($p -and $p.CommandLine -match 'app\\.yue2_app\\.(core_worker|transcribe_worker|voice_worker|workflow_worker)' "
+        f"if($p -and $p.CommandLine -match 'app\\.yue2_app\\.(core_worker|transcribe_worker|voice_worker|workflow_worker|rvc_worker|training_worker|mulacover_worker|midi_extract_worker)' "
         f"-and $p.CommandLine -like '*{job_id}*'){{taskkill.exe /PID {pid} /T /F | Out-Null}}"
     )
     subprocess.run(["powershell.exe", "-NoProfile", "-Command", script], check=False,
@@ -184,6 +223,7 @@ class JobStore:
         ensure_layout()
         self.lock = threading.RLock()
         self.storage_lock = threading.RLock()
+        self.updating = False
         self.jobs: dict[str, dict] = {}
         self.pending: queue.Queue[str] = queue.Queue()
         self.current_id: str | None = None
@@ -224,11 +264,25 @@ class JobStore:
         if kind == "transcribe":
             name = Path(str(request.get("source_path", ""))).name
             return f"转谱 {name}" if name else "从音频提取旋律与乐谱"
+        if kind == 'midi_extract':
+            return f'提取 MIDI · {request.get("title") or Path(str(request.get("source_path", ""))).name}'[:200]
         if kind in {"voice_convert", "reference_cover"}:
             name = Path(str(request.get("reference_path", ""))).name
             return f"参考音色翻唱 · {name}" if name else "参考音色翻唱"
         if kind == "render_plan":
             return "从已确认的 ABC 乐谱生成歌曲"
+        if kind == "yue2_training_assets":
+            return "安装并校验 YuE2 训练资源"
+        if kind == "mulacover_remix":
+            source = request.get("source") if isinstance(request.get("source"), dict) else {}
+            name = Path(str(request.get("source_path") or source.get("ref_audio") or source.get("melody_midi") or "")).name
+            return f"重新编曲 · {name}" if name else "MuLaCover 重新编曲"
+        if kind in {"yue2_prepare", "yue2_train", "yue2_preview"}:
+            labels = {"yue2_prepare": "准备 YuE2 训练素材", "yue2_train": "训练 YuE2 歌曲风格",
+                      "yue2_preview": "试听 YuE2 风格检查点"}
+            return labels[kind]
+        if kind == "workbench_migrate":
+            return "整理现有上传与任务结果"
         style = " ".join(str(request.get("style", "")).split())
         if style:
             return style[:72] + ("…" if len(style) > 72 else "")
@@ -239,61 +293,273 @@ class JobStore:
             "decode": "输出 48 kHz 音频",
         }.get(kind, "本地音乐任务")
 
+    def _materialize_local_reference(self, source: Path, *, identity: str, suffix: str) -> Path:
+        """Expose a verified source to workers without a browser download/upload round trip."""
+        source = source.resolve()
+        suffix = suffix.lower() if suffix.startswith(".") else ".bin"
+        directory = ROOT / "uploads"
+        directory.mkdir(parents=True, exist_ok=True)
+        safe_identity = re.sub(r"[^a-zA-Z0-9_-]+", "-", identity)[:120]
+        destination = within(ROOT / "uploads", directory / f"{safe_identity}{suffix}")
+        if destination.is_file() and destination.stat().st_size == source.stat().st_size:
+            return destination
+        if destination.exists():
+            destination.unlink()
+        try:
+            os.link(source, destination)
+        except OSError:
+            shutil.copy2(source, destination)
+        if not destination.is_file() or destination.stat().st_size != source.stat().st_size:
+            destination.unlink(missing_ok=True)
+            raise ValueError("本地素材引用准备失败")
+        return destination
+
+    def _resolve_local_references(self, value, references: list[dict]):
+        if isinstance(value, list):
+            return [self._resolve_local_references(item, references) for item in value]
+        if not isinstance(value, dict):
+            return value
+        if "$asset" in value:
+            if set(value) - {"$asset", "revision_id", "name"}:
+                raise ValueError("资产引用包含不支持的字段")
+            asset_id = str(value.get("$asset") or "")
+            revision_id = str(value.get("revision_id") or "")
+            library = AssetLibrary(ROOT)
+            asset = library.get_asset(asset_id)
+            source, info = library.revision_file(asset_id, revision_id)
+            if asset.get("kind") not in {"song", "work", "vocal", "instrumental", "reference_voice", "midi"}:
+                raise ValueError("这个资产不能作为本地音频或 MIDI 输入")
+            actual_revision = str(info.get("id") or asset.get("current_revision_id") or revision_id)
+            destination = self._materialize_local_reference(
+                source, identity=f"asset-{info['blob_sha256']}",
+                suffix=str(info.get("blob_suffix") or source.suffix))
+            references.append({"type": "asset", "asset_id": asset_id,
+                               "revision_id": actual_revision, "title": asset.get("title", "")})
+            return str(destination)
+        if "$job_file" in value:
+            if set(value) - {"$job_file", "name"} or not isinstance(value.get("$job_file"), dict):
+                raise ValueError("任务文件引用格式无效")
+            descriptor = value["$job_file"]
+            if set(descriptor) != {"job_id", "relative"}:
+                raise ValueError("任务文件引用字段无效")
+            job_id = str(descriptor.get("job_id") or "")
+            status = self.get(job_id)
+            if status.get("status") != "complete":
+                raise ValueError("只能引用已完成任务的文件")
+            directory = job_directory(job_id)
+            relative = Path(str(descriptor.get("relative") or ""))
+            source = within(directory, directory / relative)
+            if not source.is_file() or source.is_symlink():
+                raise ValueError("引用的任务文件不存在")
+            relative_hash = hashlib.sha256(relative.as_posix().encode("utf-8")).hexdigest()[:20]
+            destination = self._materialize_local_reference(
+                source, identity=f"job-{job_id}-{relative_hash}", suffix=source.suffix)
+            references.append({"type": "job_file", "job_id": job_id,
+                               "relative": relative.as_posix(), "title": str(value.get("name") or source.name)})
+            return str(destination)
+        return {key: self._resolve_local_references(child, references) for key, child in value.items()}
+
+    def assert_writable(self) -> None:
+        if self.updating or updater.update_status(ROOT, __version__).get('state') in updater.ACTIVE_STATES:
+            raise ValueError('整合包正在更新，请等待升级完成后再提交操作')
+
+    def begin_update(self) -> None:
+        with self.storage_lock:
+            self.assert_writable()
+            with self.lock:
+                if any(job.get('status') not in TERMINAL for job in self.jobs.values()):
+                    raise ValueError('有任务正在运行或排队，请等待任务结束后再更新')
+            atomic_json(ROOT / 'logs/update-status.json', {
+                'state': 'preparing_update', 'message': '正在下载并校验更新包',
+                'current_version': __version__,
+            })
+            self.updating = True
+
+    def abort_update(self, error: Exception) -> None:
+        with self.storage_lock:
+            atomic_json(ROOT / 'logs/update-status.json', {'state': 'error', 'message': str(error)})
+            self.updating = False
+
     def create(self, kind: str, request: dict, *, source: str = "api",
-               client_request_id: str | None = None, result_panel: str | None = None) -> dict:
-        if kind not in CORE_KINDS | TRANSCRIBE_KINDS | VOICE_KINDS | WORKFLOW_KINDS | ASSISTANT_KINDS:
+                 client_request_id: str | None = None, result_panel: str | None = None) -> dict:
+        with self.storage_lock:
+            self.assert_writable()
+            return self._create(kind, request, source=source, client_request_id=client_request_id, result_panel=result_panel)
+
+    def _create(self, kind: str, request: dict, *, source: str = "api",
+                client_request_id: str | None = None, result_panel: str | None = None) -> dict:
+        with self.lock:
+            active = [job for job in self.jobs.values() if job.get('status') not in TERMINAL]
+            if any(job.get('kind') == 'rvc_storage_move' for job in active) or (kind == 'rvc_storage_move' and active):
+                raise ValueError('目录迁移需要独占任务队列，请等待当前任务结束')
+        if kind not in CORE_KINDS | TRANSCRIBE_KINDS | VOICE_KINDS | WORKFLOW_KINDS | ASSISTANT_KINDS | RVC_KINDS | TRAINING_KINDS | MULACOVER_KINDS | MIDI_KINDS:
             raise ValueError(f"不支持的任务类型：{kind}")
         if not isinstance(request, dict):
             raise ValueError("request 必须是对象")
+        request = json.loads(json.dumps(request))
+        local_references: list[dict] = []
+        request = self._resolve_local_references(request, local_references)
+        if local_references:
+            request["_local_references"] = local_references
         capabilities = runtime_ready().get("capabilities", {})
-        if kind in GENERATION_KINDS | WORKFLOW_KINDS and not capabilities.get("generation"):
+        if kind == "rvc_train" and not capabilities.get("rvc_training"):
+            raise ValueError("RVC 训练组件或底模尚未安装完整")
+        if kind == "rvc_separate" and not capabilities.get("vocal_separation"):
+            raise ValueError("人声分离组件或模型尚未安装完整")
+        if kind in RVC_KINDS:
+            if kind in {"rvc_import", "rvc_separate", "rvc_train"}:
+                from .rvc_projects import get_project, selected_materials
+                project = get_project(ROOT, str(request.get("project_id", "")))
+                if kind == "rvc_train":
+                    selected_materials(project)
+            result_panel = "voices"
+        if kind in TRAINING_KINDS:
+            result_panel = "assets" if kind == "workbench_migrate" else "training"
+            if kind not in {"yue2_training_assets", "workbench_migrate"}:
+                library = AssetLibrary(ROOT)
+                run = library.get_training_run(str(request.get("run_id", "")))
+                if run.get("config", {}).get("cleanup_pending"):
+                    raise ValueError("此训练已部分清理，请完成清理后创建新训练")
+                if run["training_kind"] != "yue2_style":
+                    raise ValueError("训练记录类型无效")
+            if kind == "yue2_train":
+                from .yue2_trainer import training_config
+                training_config(run.get("config"))
+                if run.get("state") not in {"draft", "failed", "cancelled", "paused"}:
+                    raise ValueError("这个训练记录已经完成或正在运行，不能重复启动")
+                if not run.get("config", {}).get("prepared"):
+                    raise ValueError("请先完成训练素材预处理")
+            if kind in {"yue2_prepare", "yue2_train"} and not capabilities.get("yue2_training"):
+                raise ValueError("YuE2 训练资源或 MERT 模型尚未安装完整")
+        if kind in MIDI_KINDS:
+            from .midi_extract_worker import normalize_request, readiness
+            if not readiness(ROOT)['ready']:
+                raise ValueError('音乐转 MIDI 的 YourMT3 / 和弦模型或源码尚未安装完整')
+            request = normalize_request(ROOT, request)
+            result_panel = 'midi'
+        if kind in MULACOVER_KINDS:
+            if not capabilities.get("mulacover"):
+                raise ValueError("MuLaCover 重新编曲模型尚未安装完整，请在模型与设置中检查")
+            from .mulacover_core import normalize_request
+            request = normalize_request(ROOT, request)
+            if request.get('midi_snapshot_id'):
+                from .midi_document import MidiStore, ident
+                midi_store = MidiStore(AssetLibrary(ROOT))
+                snapshot_id = ident(request['midi_snapshot_id'])
+                with midi_store.library.reading() as db:
+                    row = db.execute('SELECT * FROM midi_snapshots WHERE id=?', (snapshot_id,)).fetchone()
+                if row is None:
+                    raise ValueError('MIDI 生成快照不存在')
+                snapshot = json.loads(row['data_json'])
+                if (row['document_id'] != request['midi_document_id'] or
+                    row['document_version'] != request['midi_document_version'] or
+                    snapshot['project_id'] != request['project_id']):
+                    raise ValueError('MIDI 生成快照版本或项目不匹配')
+                for role, key in (('melody','melody_midi'),('chord','chord_midi'),('drums','drum_midi')):
+                    expected = midi_store.home/'s'/snapshot_id/f'{role}.mid'
+                    if Path(request['source'].get(key, '')).resolve() != expected.resolve():
+                        raise ValueError('MIDI 任务必须使用该快照的固定输入')
+            result_panel = 'midi' if request.get('midi_snapshot_id') else 'remix'
+        if kind in GENERATION_KINDS | WORKFLOW_KINDS | PREVIEW_KINDS and not capabilities.get("generation"):
             raise ValueError("歌曲生成组件不完整：缺少 YuE2 推理源码或核心模型，请重新解压完整整合包")
         if kind in TRANSCRIBE_KINDS and not capabilities.get("transcription"):
             raise ValueError("音频转谱组件不完整，请重新解压完整整合包")
-        if kind in VOICE_KINDS | WORKFLOW_KINDS and not capabilities.get("voice_conversion"):
-            raise ValueError("参考音色组件不完整：请检查 Seed-VC、Demucs 与 voice 运行环境")
-        request = json.loads(json.dumps(request))
+        if kind in VOICE_KINDS | WORKFLOW_KINDS:
+            voice_request = request.get('voice', {}) if kind in WORKFLOW_KINDS else request
+            if not isinstance(voice_request, dict):
+                raise ValueError('音色转换参数必须是对象')
+            backend = voice_request.get('backend', 'seed-vc')
+            if backend not in {'rvc', 'seed-vc', 'compare'}:
+                raise ValueError('不支持的音色转换方式')
+            if backend in {'rvc', 'compare'}:
+                from .rvc_pitch import rvc_pitch_shift
+                rvc_pitch_shift(voice_request)
+                if not capabilities.get('rvc_inference') or not capabilities.get('vocal_separation'):
+                    raise ValueError('RVC 或人声分离组件尚未安装完整')
+                from .rvc_library import verify_voice
+                selected_voice = verify_voice(ROOT, str(voice_request.get('voice_id', '')))
+                if not selected_voice.get('f0', True) and rvc_pitch_shift(voice_request):
+                    raise ValueError('所选 RVC 模型未启用音高条件，不支持指定移调')
+                sid = str(int(voice_request.get('speaker_id', 0)))
+                if sid not in selected_voice['indices']:
+                    raise ValueError('音色中不存在对应的说话人索引')
+            if backend in {'seed-vc', 'compare'} and not capabilities.get('voice_conversion'):
+                raise ValueError('参考音色组件或所选转换方式不可用')
         if kind in TRANSCRIBE_KINDS:
             from .transcription_data import validate_transcription_request
             validate_transcription_request(request)
         if kind in ASSISTANT_KINDS:
             request = assistant_data.normalize_request(ROOT, request)
             result_panel = "assistant"
-        generation = request.get("generate") if kind in WORKFLOW_KINDS else request
+        generation = request.get("generate") if kind in WORKFLOW_KINDS | PREVIEW_KINDS else request
+        if kind in PREVIEW_KINDS and not isinstance(generation, dict):
+            raise ValueError("检查点试听需要生成参数")
         if kind in WORKFLOW_KINDS:
             if not isinstance(generation, dict) or not isinstance(request.get("voice"), dict):
                 raise ValueError("翻唱需要 generate 和 voice 两组参数")
+            generation["candidates"] = 1
+        if kind in VOICE_KINDS | WORKFLOW_KINDS:
+            voice_request = request['voice'] if kind in WORKFLOW_KINDS else request
             from .voice_worker import _audio_path, _number
             import soundfile as sf
-            reference = _audio_path(ROOT, request["voice"].get("reference_path"), reference=True)
-            try:
-                duration = sf.info(reference).duration
-            except RuntimeError as exc:
-                raise ValueError("参考声音不是可读取的音频文件") from exc
-            if not 1 <= duration <= 30:
-                raise ValueError("参考音色需要 1–30 秒清晰干声")
+            if "auto_f0_adjust" in voice_request and type(voice_request["auto_f0_adjust"]) is not bool:
+                raise ValueError("自动音高调整必须是 true 或 false")
+            if kind in VOICE_KINDS:
+                _audio_path(ROOT, voice_request.get('source_path'))
+            if voice_request.get('backend', 'seed-vc') in {'seed-vc', 'compare'}:
+                reference = _audio_path(ROOT, voice_request.get("reference_path"), reference=True)
+                try:
+                    duration = sf.info(reference).duration
+                except RuntimeError as exc:
+                    raise ValueError("参考声音不是可读取的音频文件") from exc
+                if not 1 <= duration <= 30:
+                    raise ValueError("参考音色需要 1–30 秒清晰干声")
             for key, default, low, high in (
                 ("diffusion_steps", 30, 4, 50), ("cfg_rate", .7, 0, 1.5),
                 ("semi_tone_shift", 0, -12, 12), ("vocal_gain_db", 0, -18, 12),
                 ("accompaniment_gain_db", 0, -18, 12)):
-                _number(request["voice"], key, default, low, high)
-            generation["candidates"] = 1
-        if kind in GENERATION_KINDS | WORKFLOW_KINDS:
-            generation.setdefault("offload_ar", True)
-            generation.setdefault("nar_attention", "sdpa")
-            generation.setdefault("nar_query_chunk_size", 256)
-            if type(generation["offload_ar"]) is not bool:
-                raise ValueError("offload_ar 必须是布尔值")
-            if generation["nar_attention"] not in {"sdpa", "math", "flash", "cudnn"}:
-                raise ValueError("不支持的声学注意力后端")
-            rows = generation["nar_query_chunk_size"]
-            if type(rows) is not int or not 1 <= rows <= 1024:
-                raise ValueError("声学计算分块必须是 1–1024 的整数")
-            budget = float(generation.get("memory_budget_gib", 23.5))
+                _number(voice_request, key, default, low, high)
+        if kind in GENERATION_KINDS | WORKFLOW_KINDS | PREVIEW_KINDS | MULACOVER_KINDS:
+            if kind not in MULACOVER_KINDS:
+                generation.setdefault("offload_ar", True)
+                generation.setdefault("nar_attention", "sdpa")
+                generation.setdefault("nar_query_chunk_size", 256)
+                if type(generation["offload_ar"]) is not bool:
+                    raise ValueError("offload_ar 必须是布尔值")
+                if generation["nar_attention"] not in {"sdpa", "math", "flash", "cudnn"}:
+                    raise ValueError("不支持的声学注意力后端")
+                rows = generation["nar_query_chunk_size"]
+                if type(rows) is not int or not 1 <= rows <= 1024:
+                    raise ValueError("声学计算分块必须是 1–1024 的整数")
+                if "vae_core_frames" in generation:
+                    vae_frames = generation["vae_core_frames"]
+                    if type(vae_frames) is not int or vae_frames not in {128, 256, 512, 1024}:
+                        raise ValueError("VAE 解码分块必须是 128、256、512 或 1024")
+            raw_budget = generation.get("memory_budget_gib", 23.5)
+            try:
+                if isinstance(raw_budget, bool):
+                    raise ValueError()
+                budget = float(raw_budget)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("显存预算必须是大于 2 GiB 的有限数值") from exc
             if not math.isfinite(budget) or budget <= 2:
                 raise ValueError("显存预算必须是大于 2 GiB 的有限数值")
+            generation["memory_budget_gib"] = budget
+            generation.setdefault("model_loading", "auto")
+            if not isinstance(generation["model_loading"], str) or generation["model_loading"] not in {"auto", "gpu", "cpu-offload"}:
+                raise ValueError("模型加载方式必须是 auto、gpu 或 cpu-offload")
+            if generation.get("style_model_asset_id"):
+                model_asset = AssetLibrary(ROOT).get_asset(str(generation["style_model_asset_id"]))
+                if model_asset.get("kind") != "model" or model_asset.get("metadata", {}).get("model_type") != "yue2_ar_lora":
+                    raise ValueError("所选歌曲风格模型无效")
+                if generation.get("cot", "full") not in model_asset.get("metadata", {}).get("supported_cot", ["off"]):
+                    raise ValueError("这个歌曲风格模型首期只支持“直接生成”模式")
+                strength = float(generation.get("style_model_scale", 1.0))
+                if not math.isfinite(strength) or not 0 <= strength <= 2:
+                    raise ValueError("歌曲风格强度必须在 0–2 之间")
+                generation["style_model_scale"] = strength
         source = source if source in {"webui", "comfyui", "api"} else "api"
-        if result_panel not in {"create", "plan", "cover", "assistant", "transcription"}:
+        if result_panel not in {"create", "plan", "cover", "remix", "midi", "transcription", "assistant", "voices", "training"}:
             result_panel = ("cover" if kind in {"reference_cover", "voice_convert"} or
                             (kind == "generate" and request.get("abc")) else
                             "plan" if kind == "render_plan" else "create")
@@ -323,9 +589,12 @@ class JobStore:
             now = time.time()
             job = {"id": job_id, "kind": kind, "request": request, "created_at": now,
                    "source": source, "client_request_id": client_request_id, "result_panel": result_panel}
+            nested_project_id = (request.get("generate", {}).get("project_id")
+                                 if isinstance(request.get("generate"), dict) else "")
             status = {"id": job_id, "kind": kind, "status": "queued", "stage": "queued",
                       "created_at": now, "updated_at": now, "job_dir": str(directory),
-                      "source": source, "summary": self._summary(kind, request), "result_panel": result_panel}
+                      "source": source, "summary": self._summary(kind, request), "result_panel": result_panel,
+                      "project_id": str(request.get("project_id") or nested_project_id or "")}
             atomic_json(directory / "job.json", job)
             atomic_json(directory / "status.json", status)
             with self.lock:
@@ -352,27 +621,59 @@ class JobStore:
                 status["result_panel"] = ("cover" if kind in {"reference_cover", "voice_convert"} or
                                           (kind == "generate" and job.get("request", {}).get("abc")) else
                                           "plan" if kind == "render_plan" else "create")
+            if "project_id" not in status:
+                try:
+                    saved_job = json.loads((directory / "job.json").read_text(encoding="utf-8"))
+                    saved_request = saved_job.get("request", {})
+                    nested_project_id = (saved_request.get("generate", {}).get("project_id")
+                                         if isinstance(saved_request.get("generate"), dict) else "")
+                    status["project_id"] = str(saved_request.get("project_id") or nested_project_id or "")
+                except (OSError, ValueError, json.JSONDecodeError):
+                    status["project_id"] = ""
             with self.lock:
                 self.jobs[job_id] = status
         return public_job(status)
 
-    def resume(self, job_id: str) -> dict:
+    def resume(self, job_id: str, data: dict | None = None) -> dict:
         with self.storage_lock:
             status = self.get(job_id)
-            if status["status"] not in {"failed", "cancelled"}:
-                raise ValueError("只能恢复失败或取消的任务")
+            if status.get("cleanup_pending"):
+                raise ValueError("此任务已部分清理，不能继续执行；请完成清理后创建新任务")
+            if status.get("training_deleted"):
+                raise ValueError("此训练记录或缓存已清理，不能继续执行；请创建新训练")
+            partial_midi = status.get('kind') == 'midi_extract' and (status.get('result') or {}).get('partial') is True
+            if status["status"] not in {"failed", "cancelled", "paused"} and not (status['status']=='complete' and partial_midi):
+                raise ValueError("只能恢复失败、取消或暂停的任务")
             directory = job_directory(job_id)
             job = json.loads((directory / "job.json").read_text(encoding="utf-8"))
-            if job["kind"] not in {"generate", "reference_cover", "voice_convert", "render_plan"}:
+            if job["kind"] not in {"generate", "reference_cover", "voice_convert", "render_plan", "rvc_train", "rvc_import", "rvc_separate", "rvc_storage_move", "yue2_train", "mulacover_remix", 'midi_extract'}:
                 raise ValueError("这个任务类型暂不支持阶段恢复")
             request = dict(job["request"])
-            request["resume_from"] = str(directory)
+            overrides = dict(data or {})
+            runtime_keys = {"memory_budget_gib", "backend", "model_loading", "offload_ar", "nar_attention",
+                            "nar_query_chunk_size", "vae_core_frames"}
+            unexpected = set(overrides) - runtime_keys
+            if unexpected:
+                raise ValueError("恢复参数包含不支持的字段：" + "、".join(sorted(unexpected)))
+            if overrides:
+                if job["kind"] == "reference_cover":
+                    generation = dict(request.get("generate", {}))
+                    generation.update(overrides)
+                    request["generate"] = generation
+                elif job["kind"] in {"generate", "render_plan", "mulacover_remix"}:
+                    request.update(overrides)
+                else:
+                    raise ValueError("这个任务类型不支持覆盖生成参数")
+            if job["kind"] != "yue2_train":
+                request["resume_from"] = str(directory)
             return self.create(job["kind"], request, source=job.get("source", "api"),
                                result_panel=job.get("result_panel"))
 
     def retry_assistant(self, job_id: str, data: dict) -> dict:
         with self.storage_lock:
             status = self.get(job_id)
+            if status.get("cleanup_pending"):
+                raise ValueError("此任务已部分清理，不能按阶段重试；请完成清理后创建新任务")
             if status["kind"] != "assistant" or status["status"] not in TERMINAL:
                 raise ValueError("只能重试已结束的助手任务")
             directory = job_directory(job_id)
@@ -396,25 +697,126 @@ class JobStore:
                 continue
         return result
 
+    def list_page(self, *, limit: int = 100, offset: int = 0, kind: str = "",
+                  status: str = "", query: str = "", project_id: str = "",
+                  latest_by_panel: bool = False, compact: bool = False,
+                  exclude_connection: bool = False) -> tuple[list[dict], int]:
+        limit, offset, needle = max(1, min(int(limit), 500)), max(0, int(offset)), str(query).strip().lower()[:200]
+        with self.lock:
+            values = list(self.jobs.items())
+        values.sort(key=lambda item: item[1].get("created_at", 0), reverse=True)
+        def matches(item):
+            job_id, value = item
+            if kind and value.get("kind") != kind:
+                return False
+            if status and value.get("status") != status:
+                return False
+            if exclude_connection and (value.get("summary") == "测试 LLM 连接" or
+                                       (isinstance(value.get("result"), dict) and value["result"].get("connection"))):
+                return False
+            if project_id:
+                scoped = str(value.get("project_id") or "")
+                if "project_id" not in value:
+                    try:
+                        saved = json.loads((job_directory(job_id) / "job.json").read_text(encoding="utf-8"))
+                        saved_request = saved.get("request", {})
+                        nested_project_id = (saved_request.get("generate", {}).get("project_id")
+                                             if isinstance(saved_request.get("generate"), dict) else "")
+                        scoped = str(saved_request.get("project_id") or nested_project_id or "")
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        scoped = ""
+                if (project_id == "__global__" and scoped) or (project_id != "__global__" and scoped != project_id):
+                    return False
+            if needle and needle not in " ".join((job_id, str(value.get("summary", "")),
+                                                   str(value.get("kind", "")), str(value.get("error", "")))).lower():
+                return False
+            return True
+        filtered = [item for item in values if matches(item)]
+        if latest_by_panel:
+            latest, panels = [], set()
+            midi_previous_needed, midi_previous_added = False, False
+            for item in filtered:
+                key = str(item[1].get("result_panel") or item[1].get("kind") or "")
+                value = item[1]
+                # Transcription has its own result cards, and must not hide generated songs.
+                if key == 'midi' and value.get('kind') == 'midi_extract':
+                    continue
+                if key in panels:
+                    result = value.get('result') or {}
+                    if (key == 'midi' and midi_previous_needed and not midi_previous_added
+                            and value.get('kind') == 'mulacover_remix'
+                            and value.get('status') == 'complete' and result.get('audio')):
+                        latest.append(item)
+                        midi_previous_added = True
+                    continue
+                panels.add(key); latest.append(item)
+                if key == 'midi':
+                    midi_previous_needed = value.get('status') != 'complete'
+            filtered = latest
+        result = []
+        for job_id, _ in filtered[offset:offset + limit]:
+            try:
+                value = self.get(job_id)
+                if compact:
+                    value.pop("history", None)
+                    if isinstance(value.get("result"), dict):
+                        value["result"] = dict(value["result"])
+                        value["result"].pop("history", None)
+                result.append(value)
+            except KeyError:
+                continue
+        return result, len(filtered)
+
     def cancel(self, job_id: str, force: bool = False) -> dict:
         status = self.get(job_id)
         if status["status"] in TERMINAL:
             return status
         directory = job_directory(job_id)
         (directory / "cancel.requested").touch()
-        with self.lock:
-            is_current = self.current_id == job_id or status.get("status") == "running"
-        if is_current:
-            status.update({"status": "cancelling", "stage": "cancelling", "updated_at": time.time()})
-        else:
-            status.update({"status": "cancelled", "stage": "cancelled", "updated_at": time.time(),
-                           "finished_at": time.time(), "error": "任务在排队阶段被取消"})
-        atomic_json(directory / "status.json", status)
+        status_path = directory / "status.json"
+        with json_file_lock(status_path):
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            if status.get("status") in TERMINAL:
+                return public_job(status)
+            with self.lock:
+                is_current = self.current_id == job_id or status.get("status") in {"running", "cancelling"}
+            if is_current:
+                status.update({"status": "cancelling", "stage": "cancelling", "updated_at": time.time()})
+            else:
+                status.update({"status": "cancelled", "stage": "cancelled", "updated_at": time.time(),
+                               "finished_at": time.time(), "error": "任务在排队阶段被取消"})
+            atomic_json(status_path, status)
         with self.lock:
             self.jobs[job_id] = status
             process = self.current_process if self.current_id == job_id else None
         if (force or status.get("kind") in ASSISTANT_KINDS) and process and process.poll() is None:
             terminate_process_tree(process.pid)
+        return public_job(status)
+
+    def pause(self, job_id: str) -> dict:
+        status = self.get(job_id)
+        if status.get("kind") != "yue2_train":
+            raise ValueError("只有 YuE2 歌曲风格训练支持安全暂停")
+        if status["status"] == "paused":
+            return status
+        if status["status"] not in {"queued", "running"}:
+            raise ValueError("这个训练当前不能暂停")
+        directory = job_directory(job_id)
+        status_path = directory / "status.json"
+        if status["status"] != "queued":
+            (directory / "pause.requested").touch()
+        with json_file_lock(status_path):
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            if status.get("status") in TERMINAL:
+                return public_job(status)
+            if status["status"] == "queued":
+                status.update(status="paused", stage="paused", updated_at=time.time(),
+                              finished_at=time.time(), resumable=True)
+            else:
+                status.update(status="pausing", stage="pausing", updated_at=time.time(), resumable=True)
+            atomic_json(status_path, status)
+        with self.lock:
+            self.jobs[job_id] = status
         return public_job(status)
 
     def state(self) -> dict:
@@ -423,6 +825,133 @@ class JobStore:
             queued = sum(1 for job_id, status in self.jobs.items()
                          if job_id != current and status.get("status") == "queued")
         return {"current_job": current, "queued": queued}
+
+    def free_memory(self, *, cancel_current: bool = False, force: bool = False) -> dict:
+        """Release allocator blocks owned by this process and report the worker state.
+
+        Generation workers are deliberately isolated processes and clean up in
+        their own ``finally`` blocks.  We never kill an active worker merely
+        because the user pressed the cleanup button; callers may opt into an
+        explicit cancellation when they really want to stop the current job.
+        """
+        state_before = self.state()
+        cancelled = None
+        if cancel_current and state_before.get("current_job"):
+            cancelled = self.cancel(state_before["current_job"], force=force)
+        before = memory_snapshot()
+        release = clear_current_process_cuda()
+        after = memory_snapshot()
+        return {
+            "ok": True,
+            "before": before,
+            "after": after,
+            "release": release,
+            "cancelled": cancelled,
+            "worker_isolation": True,
+            "state": self.state(),
+            "message": (
+                "当前任务仍在独立 worker 中运行，未中断它；任务结束后会自动释放显存。"
+                if self.state().get("current_job") else
+                "已清理当前服务进程的 CUDA 缓存；没有驻留 worker 模型。"
+            ),
+        }
+
+    def _promote_completed_result(self, job_id: str, status: dict) -> None:
+        """Commit useful outputs to the durable library once per completed job."""
+        if status.get("status") != "complete" or status.get("asset_ids"):
+            return
+        directory = job_directory(job_id)
+        job = json.loads((directory / "job.json").read_text(encoding="utf-8-sig"))
+        request, result = job.get("request", {}), status.get("result") or {}
+        library = AssetLibrary(ROOT)
+        paths: list[tuple[Path, str, str]] = []
+        seen = set()
+        def visit(value, key=""):
+            if isinstance(value, dict):
+                for child_key, child in value.items():
+                    visit(child, child_key)
+            elif isinstance(value, list):
+                for child in value:
+                    visit(child, key)
+            elif isinstance(value, str) and key in {
+                "audio", "converted", "converted_vocal", "separated_vocal", "accompaniment",
+                "melody_midi", "chord_midi", "drum_midi",
+            }:
+                try:
+                    candidate = Path(value).resolve()
+                except (OSError, ValueError):
+                    return
+                try:
+                    within(directory, candidate)
+                except ValueError:
+                    return
+                suffix = candidate.suffix.lower()
+                if candidate.is_file() and suffix in {".wav", ".flac", ".mp3", ".m4a", ".ogg", ".aac", ".mid", ".midi"}:
+                    kind = "midi" if suffix in {".mid", ".midi"} else "vocal" if "vocal" in key or key == "converted" else "instrumental" if key == "accompaniment" else "work"
+                    marker = (str(candidate), kind)
+                    if marker not in seen:
+                        seen.add(marker); paths.append((candidate, kind, key))
+        visit(result)
+        asset_ids = list(result.get('asset_ids') or []) if job.get('kind') == 'midi_extract' else []
+        generate_request = request.get("generate")
+        nested_project_id = generate_request.get("project_id") if isinstance(generate_request, dict) else ""
+        project_id = str(request.get("project_id") or nested_project_id or "")
+        for index, (path, kind, role) in enumerate(paths):
+            asset = library.import_file(
+                path, kind=kind, title=(status.get("summary") or kind) + ("" if index == 0 else f" · {role}"),
+                provenance={"job_id": job_id, "job_kind": job.get("kind"), "result_key": role},
+                metadata={"source_job_id": job_id, "track_group_id": f"job:{job_id}",
+                          "result_panel": status.get("result_panel"),
+                          "midi_document_id": request.get('midi_document_id', ''),
+                          "document_version": request.get('midi_document_version'),
+                          "midi_snapshot_id": request.get('midi_snapshot_id', '')},
+            )
+            asset_ids.append(asset["id"])
+            if project_id:
+                try:
+                    library.add_to_project(project_id, asset["id"], role=role or kind)
+                except (ValueError, KeyError):
+                    project_id = ""
+        generation = generate_request if isinstance(generate_request, dict) else request
+        if isinstance(generation, dict):
+            for kind, key in (("style", "style"), ("lyrics", "lyrics"), ("score", "abc")):
+                if kind != "score" and not project_id:
+                    continue
+                candidates = [generation.get(key)]
+                if kind == "score":
+                    candidates.append(result.get("abc"))
+                contents: list[str] = []
+                for candidate in candidates:
+                    if not isinstance(candidate, str) or not candidate.strip():
+                        continue
+                    text = candidate
+                    if kind == "score" and not candidate.lstrip().startswith("X:"):
+                        try:
+                            source = Path(candidate).resolve()
+                            within(directory, source)
+                            if source.is_file() and source.suffix.lower() == ".abc":
+                                text = source.read_text(encoding="utf-8-sig")
+                            else:
+                                continue
+                        except (OSError, UnicodeError, ValueError):
+                            continue
+                    if text.strip() and text not in contents:
+                        contents.append(text)
+                if kind == "style" and not contents and job.get("kind") == "mulacover_remix":
+                    contents = [str(generation.get("tags") or "").strip()]
+                for content in filter(None, contents):
+                    text_asset = library.create_text(
+                        kind=kind, title=(status.get("summary") or "作品") + f" · {kind}", text=content,
+                        provenance={"job_id": job_id, "job_kind": job.get("kind")})
+                    asset_ids.append(text_asset["id"])
+                    if project_id:
+                        library.add_to_project(project_id, text_asset["id"], role=kind)
+        if asset_ids:
+            status["asset_ids"] = asset_ids
+            status["updated_at"] = time.time()
+            atomic_json(directory / "status.json", status)
+            with self.lock:
+                self.jobs[job_id] = status
 
     def cleanup_retention(self, *, force: bool = False) -> dict:
         with self.storage_lock:
@@ -435,25 +964,188 @@ class JobStore:
             with self.lock:
                 for job_id in deleted:
                     self.jobs.pop(job_id, None)
+            for error in report.get("errors", []):
+                path = Path(error.get("path", ""))
+                if path.parent.resolve() == OUTPUTS.resolve() and JOB_ID_PATTERN.fullmatch(path.name):
+                    try:
+                        self.get(path.name)
+                    except (KeyError, OSError, ValueError):
+                        pass
         return report
 
     def retention_status(self) -> dict:
         with self.storage_lock:
             return self.retention.status()
 
+    def cleanup_asset_references(self) -> set[str]:
+        from .library_cleanup import strings
+        drafts = assistant_data.all_drafts(ROOT)
+        if any(draft.get("error") for scope in drafts.values() for draft in scope.values()):
+            return {"*"}
+        references = set(strings(drafts))
+        with self.lock:
+            active = [job_id for job_id, status in self.jobs.items()
+                      if status.get("status") not in {"complete", "failed", "cancelled"}]
+            if self.current_id and self.current_id not in active:
+                active.append(self.current_id)
+        for job_id in active:
+            try:
+                request = json.loads((job_directory(job_id) / "job.json").read_text(encoding="utf-8-sig"))
+                references.update(strings(request))
+            except (OSError, ValueError):
+                return {"*"}
+        return references
+
+    def training_cleanup(self, data: dict, *, execute: bool = False) -> dict:
+        from .library_cleanup import strings
+        from .training_cleanup import TrainingCleanup, selected_ids
+        with self.storage_lock:
+            self.assert_writable()
+            runs = selected_ids(data.get("run_ids", []))
+            drafts = assistant_data.all_drafts(ROOT)
+            references = set(strings(drafts))
+            if any(draft.get("error") for scope in drafts.values() for draft in scope.values()):
+                references.add("*")
+            with self.lock:
+                jobs = dict(self.jobs)
+                current_id = self.current_id
+            finished_jobs = {}
+            for job_id, status in jobs.items():
+                if status.get("status") in {"complete", "failed", "cancelled"} and job_id != current_id:
+                    try:
+                        job = json.loads((job_directory(job_id) / "job.json").read_text(encoding="utf-8-sig"))
+                        if job.get("kind") in {"yue2_prepare", "yue2_train"} and self.get(job_id)["status"] in {"complete", "failed", "cancelled"}:
+                            finished_jobs.setdefault(str(job.get("request", {}).get("run_id", "")), set()).add(job_id)
+                    except (KeyError, OSError, ValueError):
+                        pass
+                    continue
+                try:
+                    job = json.loads((job_directory(job_id) / "job.json").read_text(encoding="utf-8-sig"))
+                except (OSError, ValueError):
+                    references.add("*")
+                    continue
+                discard = (data.get("discard_paused") is True and status.get("status") == "paused"
+                           and job_id != current_id and job.get("kind") == "yue2_train"
+                           and job.get("request", {}).get("run_id") in runs)
+                if not discard:
+                    references.update(strings(job))
+            library = AssetLibrary(ROOT)
+            with library.reading() as db:
+                verified = {row["id"]:row["current_job_id"] for row in db.execute("SELECT id,current_job_id FROM training_runs")
+                            if row["current_job_id"] in finished_jobs.get(row["id"], ())}
+            cleanup = TrainingCleanup(library, verified)
+            if not execute:
+                return cleanup.preview(data, references)
+            result = cleanup.purge(data, references)
+            removed = set(result["deleted_runs"] + result["pending_runs"])
+            # Retain completed audio/model results, but forbid resuming discarded caches.
+            for job_id in jobs:
+                try:
+                    directory = job_directory(job_id)
+                    job = json.loads((directory / "job.json").read_text(encoding="utf-8-sig"))
+                    if job.get("kind") not in {"yue2_prepare", "yue2_train", "yue2_preview"} or job.get("request", {}).get("run_id") not in removed:
+                        continue
+                    status = self.get(job_id)
+                    status.update(training_deleted=True, resumable=False)
+                    if status.get("status") == "paused":
+                        status.update(status="cancelled", finished_at=time.time())
+                    atomic_json(directory / "status.json", status)
+                    with self.lock:
+                        self.jobs[job_id] = status
+                except (KeyError, OSError, ValueError):
+                    result["errors"].append({"id": job_id, "reason": "历史任务标记更新失败；已清理训练仍不能恢复"})
+            return result
+
+    def job_cleanup(self, data: dict, *, execute: bool = False) -> dict:
+        if execute and data.get("confirmed") is not True:
+            raise ValueError("删除任务前必须确认清理预览")
+        with self.storage_lock:
+            self.assert_writable()
+            if data.get("mode") == "failed_cancelled":
+                filters = data.get("filters", {})
+                if not isinstance(filters, dict) or set(filters) - {"kind", "query", "project_id"}:
+                    raise ValueError("任务清理筛选无效")
+                ids, offset = [], 0
+                while len(ids) < 500:
+                    page, total = self.list_page(limit=500, offset=offset, **filters)
+                    ids.extend(item["id"] for item in page if item["status"] in {"failed", "cancelled"})
+                    offset += 500
+                    if offset >= total:
+                        break
+                ids = ids[:500]
+            else:
+                ids = data.get("ids")
+                if not isinstance(ids, list) or not 1 <= len(ids) <= 500:
+                    raise ValueError("请选择 1–500 项任务")
+                if any(not isinstance(item, str) or not JOB_ID_PATTERN.fullmatch(item) for item in ids):
+                    raise ValueError("无效的任务 ID")
+                ids = list(dict.fromkeys(ids))
+            protected, _, _ = self._retention_protection()
+            deleted, deletable, skipped, errors, total_bytes, released = [], [], [], [], 0, 0
+            for job_id in ids:
+                with self.lock:
+                    status = self.jobs.get(job_id)
+                reason = ""
+                if status is None:
+                    reason = "任务已不存在"
+                elif status.get("status") not in {"complete", "failed", "cancelled"}:
+                    reason = "任务正在运行、排队或已暂停，可继续执行"
+                elif job_id in protected:
+                    reason = "当前任务或草稿仍在使用，请先更换相关素材或计划"
+                try:
+                    directory = job_directory(job_id)
+                    raw_directory = OUTPUTS / job_id
+                    if raw_directory.is_symlink() or getattr(raw_directory, "is_junction", lambda: False)() or directory != OUTPUTS.resolve() / job_id:
+                        reason = "任务目录是链接，不能自动清理"
+                    raw_log = LOGS / f"{job_id}.log"
+                    log = within(LOGS, raw_log)
+                    if raw_log.is_symlink() or log != LOGS.resolve() / raw_log.name:
+                        reason = "任务日志是链接，不能自动清理"
+                except ValueError:
+                    reason = "任务路径异常，不能自动清理"
+                if reason:
+                    skipped.append({"id": job_id, "reason": reason})
+                    continue
+                size = _tree_size(directory)
+                log_size = log.stat().st_size if log.is_file() and not log.is_symlink() else 0
+                total_bytes += size + log_size
+                deletable.append(job_id)
+                if execute:
+                    try:
+                        if directory.exists():
+                            remove_job_payload(directory)
+                        with self.lock:
+                            self.jobs.pop(job_id, None)
+                        deleted.append(job_id)
+                        released += size
+                        if log_size:
+                            try:
+                                log.unlink()
+                                released += log_size
+                            except OSError:
+                                errors.append({"id": job_id, "reason": "任务已删除，日志被占用，稍后可按策略清理"})
+                    except (OSError, ValueError):
+                        try:
+                            self.get(job_id)
+                        except (KeyError, OSError, ValueError):
+                            pass
+                        errors.append({"id": job_id, "reason": "任务文件被占用，未能完成清理，请稍后重试"})
+            return {"ids": ids, "deletable": deletable, "deleted": deleted,
+                    "skipped": skipped, "errors": errors, "bytes": total_bytes, "released_bytes": released}
+
     def _retention_protection(self) -> tuple[set[str], set[str], set[str]]:
         with self.lock:
             active = {job_id for job_id, status in self.jobs.items()
-                      if status.get("status") not in TERMINAL}
+                      if status.get("status") not in {"complete", "failed", "cancelled"}}
             if self.current_id:
                 active.add(self.current_id)
         protected_jobs = set(active)
         protected_uploads: set[str] = set()
         protected_logs = {f"{job_id}.log" for job_id in active}
         requests = []
-        saved_drafts = assistant_data.drafts(ROOT)
+        saved_drafts = assistant_data.all_drafts(ROOT)
         requests.append(saved_drafts)
-        if any(draft.get("error") for draft in saved_drafts.values()):
+        if any(draft.get("error") for scope in saved_drafts.values() for draft in scope.values()):
             # An older/corrupt schema cannot reveal every referenced artifact safely.
             protected_jobs.update(self.jobs)
             protected_uploads.update(path.name for path in UPLOADS.iterdir() if path.is_file())
@@ -462,9 +1154,13 @@ class JobStore:
             try:
                 job = json.loads((job_directory(job_id) / "job.json").read_text(encoding="utf-8-sig"))
             except (OSError, ValueError, json.JSONDecodeError):
+                # Cannot safely discover dependencies of a corrupt active task.
+                protected_jobs.update(self.jobs)
+                protected_uploads.update(path.name for path in UPLOADS.iterdir() if path.is_file())
+                protected_logs.update(path.name for path in LOGS.glob("*.log"))
                 continue
             requests.append(job.get("request", {}))
-        referenced_jobs, referenced_uploads = retention_references(requests)
+        referenced_jobs, referenced_uploads = retention_references(requests, OUTPUTS, UPLOADS)
         protected_jobs.update(referenced_jobs)
         protected_uploads.update(referenced_uploads)
         return protected_jobs, protected_uploads, protected_logs
@@ -472,10 +1168,26 @@ class JobStore:
     def export(self, job_id: str, requested_destination: str = "") -> Path:
         with self.storage_lock:
             status = self.get(job_id)
-            if status.get("status") != "complete":
+            partial_comparison = (status.get('status') in TERMINAL and
+                                  status.get('result', {}).get('comparison') and
+                                  status.get('result', {}).get('candidates'))
+            if status.get("status") != "complete" and not partial_comparison:
                 raise ValueError("只能导出已完成任务的工件")
             source = within(OUTPUTS, job_directory(job_id) / "artifacts")
-            if not source.is_dir():
+            model_export = None
+            if status.get("kind") == "yue2_train":
+                result = status.get("result") if isinstance(status.get("result"), dict) else {}
+                nested_model = result.get("model_asset") if isinstance(result.get("model_asset"), dict) else {}
+                asset_id = str(result.get("model_asset_id") or nested_model.get("id") or "")
+                if not asset_id:
+                    raise FileNotFoundError("训练任务没有记录已保存的模型")
+                library = AssetLibrary(ROOT)
+                asset = library.get_asset(asset_id)
+                if asset.get("kind") != "model" or asset.get("metadata", {}).get("model_type") != "yue2_ar_lora":
+                    raise ValueError("训练任务关联的不是有效 YuE2 歌曲风格模型")
+                model_source, revision = library.revision_file(asset_id, asset.get("current_revision_id", ""))
+                model_export = (asset, revision, model_source)
+            elif not source.is_dir():
                 raise FileNotFoundError("任务没有可导出的工件")
             export_root = (ROOT / "exports").resolve()
             requested = Path(requested_destination)
@@ -486,7 +1198,29 @@ class JobStore:
                 destination = within(export_root, base / f"{status['id']}-{uuid.uuid4().hex[:8]}")
             temporary = within(export_root, base / f".{destination.name}.{uuid.uuid4().hex}.tmp")
             try:
-                shutil.copytree(source, temporary)
+                if model_export:
+                    asset, revision, model_source = model_export
+                    temporary.mkdir(parents=True)
+                    title = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", str(asset.get("title") or "YuE2-style-model"))
+                    title = title.strip(" .")[:120] or "YuE2-style-model"
+                    model_name = title + ".safetensors"
+                    shutil.copy2(model_source, temporary / model_name)
+                    atomic_json(temporary / "model.json", {
+                        "schema": 1,
+                        "job_id": status["id"],
+                        "kind": status.get("kind"),
+                        "asset_id": asset["id"],
+                        "revision_id": asset["current_revision_id"],
+                        "title": asset["title"],
+                        "model_file": model_name,
+                        "sha256": revision["blob_sha256"],
+                        "size": revision["size"],
+                        "metadata": asset.get("metadata", {}),
+                        "provenance": asset.get("provenance", {}),
+                        "exported_at": time.time(),
+                    })
+                else:
+                    shutil.copytree(source, temporary)
                 temporary.replace(destination)
             except BaseException:
                 if temporary.exists():
@@ -510,9 +1244,15 @@ class JobStore:
 
     def _mark(self, job_id: str, **values) -> None:
         directory = job_directory(job_id)
-        status = self.get(job_id)
-        status.update(values, updated_at=time.time())
-        atomic_json(directory / "status.json", status)
+        status_path = directory / "status.json"
+        with json_file_lock(status_path):
+            status = json.loads(status_path.read_text(encoding="utf-8"))
+            if status.get("status") in TERMINAL:
+                with self.lock:
+                    self.jobs[job_id] = status
+                return
+            status.update(values, updated_at=time.time())
+            atomic_json(status_path, status)
         with self.lock:
             self.jobs[job_id] = status
 
@@ -532,6 +1272,8 @@ class JobStore:
             try:
                 status = self.get(job_id)
                 directory = OUTPUTS / job_id
+                if status.get("status") in TERMINAL:
+                    continue
                 if status["status"] == "cancelling" or (directory / "cancel.requested").exists():
                     self._mark(job_id, status="cancelled", stage="cancelled", finished_at=time.time(),
                                error="任务在排队阶段被取消")
@@ -541,7 +1283,7 @@ class JobStore:
                 secret = ""
                 if kind in ASSISTANT_KINDS:
                     config = job["request"]["config"]
-                    python = ROOT / "runtime/llm/python.exe" if config["provider"] == "local" else CORE_PYTHON
+                    python = CORE_PYTHON
                     module = "app.yue2_app.assistant_worker"
                     if config["provider"] != "local":
                         secret = CREDENTIALS.get(config["credential_id"], assistant_data.endpoint(config))
@@ -551,6 +1293,14 @@ class JobStore:
                     python, module = TRANSCRIBE_PYTHON, "app.yue2_app.transcribe_worker"
                 elif kind in VOICE_KINDS:
                     python, module = VOICE_PYTHON, "app.yue2_app.voice_worker"
+                elif kind in RVC_KINDS:
+                    python, module = CORE_PYTHON, "app.yue2_app.rvc_worker"
+                elif kind in TRAINING_KINDS:
+                    python, module = CORE_PYTHON, "app.yue2_app.training_worker"
+                elif kind in MULACOVER_KINDS:
+                    python, module = CORE_PYTHON, "app.yue2_app.mulacover_worker"
+                elif kind in MIDI_KINDS:
+                    python, module = CORE_PYTHON, 'app.yue2_app.midi_extract_worker'
                 else:
                     python, module = CORE_PYTHON, "app.yue2_app.core_worker"
                 if not python.is_file():
@@ -599,6 +1349,8 @@ class JobStore:
                         self._mark(job_id, status="failed", stage="failed", finished_at=time.time(),
                                    error=worker_failure_message(log_path, return_code),
                                    log_available=log_path.is_file(), return_code=return_code)
+                else:
+                    self._promote_completed_result(job_id, latest)
             except BaseException as exc:
                 if process and process.poll() is None:
                     terminate_process_tree(process.pid)
@@ -615,6 +1367,26 @@ class JobStore:
                 self.pending.task_done()
 
 
+def retained_audio_files(status: dict, directory: Path) -> set[Path]:
+    """Only expose finished stage audio while another stage runs or has failed."""
+    result = status.get('result') or {}
+    candidates = list(result.get('candidates') or []) if result.get('comparison') else []
+    if status.get('generated_result'):
+        candidates.append(status['generated_result'])
+    allowed = set()
+    for candidate in candidates:
+        for key in ('audio', 'converted_vocal', 'separated_vocal', 'accompaniment'):
+            value = candidate.get(key)
+            if value:
+                try:
+                    path = within(directory, Path(value))
+                    if path.suffix.lower() in {'.flac', '.wav', '.mp3', '.ogg', '.m4a', '.aac'}:
+                        allowed.add(path)
+                except ValueError:
+                    pass
+    return allowed
+
+
 def rotate_server_log(path: Path) -> None:
     if not path.is_file() or path.stat().st_size < SERVER_LOG_MAX_BYTES:
         return
@@ -628,6 +1400,7 @@ def rotate_server_log(path: Path) -> None:
 
 
 STORE: JobStore | None = None
+ASSETS: AssetLibrary | None = None
 WEB_ROOT = ROOT / "app" / "web"
 
 
@@ -658,10 +1431,31 @@ class Handler(BaseHTTPRequestHandler):
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if content_type != "application/json":
             raise ValueError("请求必须使用 application/json")
-        length = int(self.headers.get("Content-Length", "0"))
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("请求正文大小无效") from exc
         if length <= 0 or length > maximum:
             raise ValueError("请求正文大小无效")
-        return json.loads(self.rfile.read(length).decode("utf-8"))
+        try:
+            value = json.loads(self.rfile.read(length).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("请求 JSON 格式无效") from exc
+        if not isinstance(value, dict):
+            raise ValueError("请求 JSON 必须是对象")
+        return value
+
+    @staticmethod
+    def _query_integer(query: dict[str, list[str]], name: str, default: int,
+                       *, minimum: int = 0, maximum: int = 500) -> int:
+        raw = query.get(name, [str(default)])[0]
+        try:
+            value = int(raw)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"查询参数 {name} 必须是整数") from exc
+        if not minimum <= value <= maximum:
+            raise ValueError(f"查询参数 {name} 必须在 {minimum}–{maximum} 之间")
+        return value
 
     def _static(self, path: Path):
         if not path.is_file():
@@ -678,51 +1472,25 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(content)
 
-    def _stream_artifact(self, file: Path, stream):
-        """Bounded reads and byte ranges let the original recording seek/stream."""
-        size = os.fstat(stream.fileno()).st_size
-        start, end, status = 0, size - 1, 200
-        requested = self.headers.get("Range")
-        if requested:
-            match = re.fullmatch(r"bytes=(\d*)-(\d*)", requested.strip())
-            try:
-                if not match or not any(match.groups()) or not size:
-                    raise ValueError
-                a, b = match.groups()
-                if a:
-                    start, end = int(a), min(int(b), size - 1) if b else size - 1
-                else:
-                    if int(b) <= 0:
-                        raise ValueError
-                    start = max(0, size - int(b))
-                if start > end or start >= size:
-                    raise ValueError
-                status = 206
-            except ValueError:
-                self.send_response(416)
-                self.send_header("Content-Range", f"bytes */{size}")
-                self.send_header("Content-Length", "0")
-                self.end_headers()
-                return
-        self.send_response(status)
-        self.send_header("Content-Type", mimetypes.guess_type(file.name)[0] or "application/octet-stream")
-        self.send_header("Content-Length", str(max(0, end - start + 1)))
-        self.send_header("Accept-Ranges", "bytes")
-        self.send_header("Cache-Control", "no-cache")
-        if status == 206:
-            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
-        self.end_headers()
-        stream.seek(start)
-        remaining = end - start + 1
-        try:
-            while remaining > 0:
-                block = stream.read(min(256 * 1024, remaining))
-                if not block:
-                    break
-                self.wfile.write(block)
-                remaining -= len(block)
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-            pass
+    def _job_file(self, path: str, *, head: bool = False):
+        pieces = path.split("/")
+        if len(pieces) < 5:
+            return self._error(400, "缺少文件路径")
+        job_id = pieces[3]
+        with STORE.storage_lock:
+            status = STORE.get(job_id)
+            relative = Path(urllib.parse.unquote("/".join(pieces[4:])))
+            directory = job_directory(job_id)
+            file = within(directory, directory / relative)
+            if status.get("status") != "complete" and file not in retained_audio_files(status, directory):
+                return self._error(409, "该音频尚未完成，暂不可读取")
+            if not file.is_file():
+                return self._error(404, "文件不存在")
+            stat = file.stat()
+            info = {"blob_sha256": f"{stat.st_mtime_ns:x}-{stat.st_size:x}",
+                    "mime": mimetypes.guess_type(file.name)[0] or "application/octet-stream"}
+        from .workbench_api import stream_file
+        return stream_file(self, file, info, head=head)
 
     def do_GET(self):
         assert STORE is not None
@@ -731,23 +1499,44 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if not is_loopback_host(self.headers.get("Host", "")):
                 return self._error(403, "Host 必须是本机回环地址")
+            if path.startswith("/api/workbench/"):
+                assert ASSETS is not None
+                from . import workbench_api
+                if workbench_api.get(self, parsed, ASSETS):
+                    return
+            if path.startswith("/api/rvc"):
+                from . import rvc_api
+                if rvc_api.get(self, parsed, STORE, ROOT):
+                    return
             if path == "/api/health":
                 return self._json(200, {"ok": True, "version": __version__, "root": str(ROOT),
                                         "ready": runtime_ready(), **STORE.state()})
+            if path == "/api/memory/status":
+                return self._json(200, {"ok": True, "memory": memory_snapshot(), **STORE.state()})
             if path == "/api/update/check":
                 info, _ = updater.check_update(__version__)
                 return self._json(200, info)
             if path == "/api/update/status":
-                return self._json(200, updater.update_status(ROOT))
+                return self._json(200, updater.update_status(ROOT, __version__))
             if path == "/api/settings":
                 return self._json(200, settings_info(ROOT))
             if path == "/api/jobs":
-                limit = int(urllib.parse.parse_qs(parsed.query).get("limit", ["100"])[0])
-                return self._json(200, {"jobs": STORE.list(limit)})
+                query = urllib.parse.parse_qs(parsed.query)
+                limit = self._query_integer(query, "limit", 100, minimum=1, maximum=500)
+                offset = self._query_integer(query, "offset", 0, minimum=0, maximum=10_000_000)
+                jobs, total = STORE.list_page(limit=limit, offset=offset, kind=query.get("kind", [""])[0],
+                                              status=query.get("status", [""])[0], query=query.get("q", [""])[0],
+                                              project_id=query.get("project_id", [""])[0],
+                                              latest_by_panel=query.get("latest_by_panel", ["0"])[0] == "1",
+                                              compact=query.get("compact", ["0"])[0] == "1",
+                                              exclude_connection=query.get("exclude_connection", ["0"])[0] == "1")
+                return self._json(200, {"jobs": jobs, "total": total,
+                                        "limit": max(1, min(limit, 500)), "offset": max(0, offset)})
             if path == "/api/assistant/config":
-                return self._json(200, assistant_data.config_info(ROOT))
+                return self._json(200, assistant_data.config_info(ROOT, CREDENTIALS))
             if path == "/api/assistant/drafts":
-                return self._json(200, assistant_data.drafts(ROOT))
+                query = urllib.parse.parse_qs(parsed.query)
+                return self._json(200, assistant_data.drafts(ROOT, query.get("project_id", [""])[0]))
             if path.startswith("/api/assistant/jobs/"):
                 job_id = path.removeprefix("/api/assistant/jobs/")
                 status = STORE.get(job_id)
@@ -769,31 +1558,36 @@ class Handler(BaseHTTPRequestHandler):
                     return self._error(404, "接口不存在")
                 return self._json(200, STORE.get(pieces[3]))
             if path.startswith("/api/files/"):
-                pieces = path.split("/")
-                if len(pieces) < 5:
-                    return self._error(400, "缺少文件路径")
-                job_id = pieces[3]
-                with STORE.storage_lock:
-                    status = STORE.get(job_id)
-                    if status.get("status") != "complete":
-                        return self._error(409, "任务尚未完成，工件暂不可读取")
-                    relative = Path(urllib.parse.unquote("/".join(pieces[4:])))
-                    directory = job_directory(job_id)
-                    file = within(directory, directory / relative)
-                    if not file.is_file():
-                        return self._error(404, "文件不存在")
-                    stream = file.open("rb")
-                with stream:
-                    return self._stream_artifact(file, stream)
+                return self._job_file(path)
             if path == "/" or path == "/index.html":
                 return self._static(WEB_ROOT / "index.html")
             if path.startswith("/static/"):
                 file = within(WEB_ROOT, WEB_ROOT / path.removeprefix("/static/"))
                 return self._static(file)
             return self._error(404, "接口不存在")
+        except ConnectionError:
+            return
         except KeyError:
             return self._error(404, "任务不存在")
         except (ValueError, OSError) as exc:
+            return self._error(400, str(exc))
+
+    def do_HEAD(self):
+        assert ASSETS is not None
+        parsed = urllib.parse.urlparse(self.path)
+        try:
+            if not is_loopback_host(self.headers.get("Host", "")):
+                return self._error(403, "Host 必须是本机回环地址")
+            if parsed.path.startswith("/api/workbench/"):
+                from . import workbench_api
+                if workbench_api.get(self, parsed, ASSETS, head=True):
+                    return
+            if parsed.path.startswith("/api/files/"):
+                return self._job_file(parsed.path, head=True)
+            return self._error(404, "接口不存在")
+        except ConnectionError:
+            return
+        except (KeyError, ValueError, OSError) as exc:
             return self._error(400, str(exc))
 
     def do_POST(self):
@@ -805,9 +1599,26 @@ class Handler(BaseHTTPRequestHandler):
             if not is_loopback_host(host):
                 return self._error(403, "Host 必须是本机回环地址")
             origin = self.headers.get("Origin")
-            if origin and (not is_loopback_host(urllib.parse.urlparse(origin).netloc)
-                           or urllib.parse.urlparse(origin).netloc.lower() != host.lower()):
+            if origin and not is_matching_loopback_origin(origin, host):
                 return self._error(403, "拒绝跨站请求")
+            if STORE.updating or updater.update_status(ROOT, __version__).get('state') in updater.ACTIVE_STATES:
+                return self._error(409, '整合包正在更新，请等待升级完成后再提交操作')
+            if path.startswith("/api/workbench/"):
+                assert ASSETS is not None
+                from . import workbench_api
+                with STORE.storage_lock:
+                    STORE.assert_writable()
+                    if path in {"/api/workbench/training-cleanup/preview", "/api/workbench/training-cleanup/delete"}:
+                        return self._json(200, STORE.training_cleanup(self._body_json(128 * 1024), execute=path.endswith("/delete")))
+                    protected_assets = STORE.cleanup_asset_references() if path in {"/api/workbench/assets/cleanup-preview", "/api/workbench/assets/purge"} else ()
+                    if workbench_api.post(self, parsed, ASSETS, ROOT, protected_assets=protected_assets):
+                        return
+            if path.startswith("/api/rvc/"):
+                from . import rvc_api
+                with STORE.storage_lock:
+                    STORE.assert_writable()
+                    if rvc_api.post(self, parsed, STORE, ROOT):
+                        return
             if path == "/api/jobs":
                 data = self._body_json()
                 return self._json(202, STORE.create(
@@ -817,13 +1628,17 @@ class Handler(BaseHTTPRequestHandler):
                 ))
             if path == "/api/retention/cleanup":
                 return self._json(200, STORE.cleanup_retention(force=True))
+            if path in {"/api/jobs/cleanup-preview", "/api/jobs/cleanup"}:
+                return self._json(200, STORE.job_cleanup(self._body_json(128 * 1024), execute=path.endswith("/cleanup")))
             if path == "/api/update/install":
-                state = STORE.state()
-                if state.get("current_job") or int(state.get("queued", 0)):
-                    raise ValueError("有任务正在运行或排队，请等待任务结束后再更新")
-                prepared = updater.prepare_update(ROOT, __version__)
-                host, port = self.server.server_address[:2]
-                result = updater.launch_update(ROOT, prepared, os.getpid(), str(host), int(port))
+                STORE.begin_update()
+                try:
+                    prepared = updater.prepare_update(ROOT, __version__)
+                    host, port = self.server.server_address[:2]
+                    result = updater.launch_update(ROOT, prepared, os.getpid(), str(host), int(port))
+                except Exception as exc:
+                    STORE.abort_update(exc)
+                    raise
                 self._json(202, result)
                 def stop_for_update():
                     time.sleep(.6)
@@ -831,7 +1646,7 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=stop_for_update, name="yue2-update-shutdown", daemon=True).start()
                 return None
             if path == "/api/assistant/config":
-                return self._json(200, assistant_data.save_config(ROOT, self._body_json(32 * 1024)))
+                return self._json(200, assistant_data.save_config(ROOT, self._body_json(32 * 1024), CREDENTIALS))
             if path == "/api/assistant/credentials":
                 data = self._body_json(16 * 1024)
                 if data.get("delete"):
@@ -896,20 +1711,25 @@ class Handler(BaseHTTPRequestHandler):
             if len(pieces) == 5 and pieces[1:3] == ["api", "jobs"] and pieces[4] == "retry-assistant":
                 return self._json(202, STORE.retry_assistant(pieces[3], self._body_json()))
             if len(pieces) == 5 and pieces[1:3] == ["api", "jobs"] and pieces[4] == "resume":
-                return self._json(202, STORE.resume(pieces[3]))
+                data = self._body_json(4096) if int(self.headers.get("Content-Length", "0")) else {}
+                return self._json(202, STORE.resume(pieces[3], data))
             if len(pieces) == 5 and pieces[1:3] == ["api", "jobs"] and pieces[4] == "cancel":
                 job_id = pieces[3]
                 data = self._body_json(1024) if int(self.headers.get("Content-Length", "0")) else {}
                 return self._json(200, STORE.cancel(job_id, bool(data.get("force", False))))
-            if path == "/api/uploads":
+            if len(pieces) == 5 and pieces[1:3] == ["api", "jobs"] and pieces[4] == "pause":
+                return self._json(200, STORE.pause(pieces[3]))
+            if path in {"/api/uploads", "/api/rvc-upload"}:
                 params = urllib.parse.parse_qs(parsed.query)
                 original = params.get("filename", ["upload.wav"])[0]
                 suffix = Path(original).suffix.lower()
-                if suffix not in {".wav", ".flac", ".mp3", ".m4a", ".ogg", ".aac"}:
-                    raise ValueError("支持 WAV、FLAC、MP3、M4A、OGG、AAC")
+                allowed = {".zip", ".pth", ".index"} if path == "/api/rvc-upload" else {".wav", ".flac", ".mp3", ".m4a", ".ogg", ".aac", ".mid", ".midi"}
+                if suffix not in allowed:
+                    raise ValueError("请选择支持的文件格式：" + "、".join(sorted(allowed)))
                 length = int(self.headers.get("Content-Length", "0"))
-                if length <= 0 or length > 1024 * 1024 * 1024:
-                    raise ValueError("音频大小必须在 1GB 以内")
+                limit = 4 * 1024**3 if path == "/api/rvc-upload" else 1024**3
+                if length <= 0 or length > limit:
+                    raise ValueError(f"文件大小必须在 {limit // 1024**3}GB 以内")
                 destination = UPLOADS / (time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:8] + suffix)
                 remaining = length
                 try:
@@ -931,11 +1751,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"destination": str(destination)})
             if path == "/api/unload":
                 data = self._body_json(1024) if int(self.headers.get("Content-Length", "0")) else {}
-                state = STORE.state()
-                if data.get("cancel_current") and state["current_job"]:
-                    STORE.cancel(state["current_job"], force=bool(data.get("force", False)))
-                return self._json(200, {"ok": True, "message": "worker 按任务隔离，空闲时不占用模型显存", **STORE.state()})
+                return self._json(200, STORE.free_memory(
+                    cancel_current=bool(data.get("cancel_current", False)),
+                    force=bool(data.get("force", False)),
+                ))
+            if path == "/api/memory/free":
+                data = self._body_json(1024) if int(self.headers.get("Content-Length", "0")) else {}
+                return self._json(200, STORE.free_memory(
+                    cancel_current=bool(data.get("cancel_current", False)),
+                    force=bool(data.get("force", False)),
+                ))
             return self._error(404, "接口不存在")
+        except ConnectionError:
+            return
         except KeyError as exc:
             return self._error(400, f"缺少字段：{exc}")
         except (ValueError, OSError, json.JSONDecodeError, assistant_data.engine.YuE2PromptError) as exc:
@@ -943,7 +1771,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main(argv=None) -> int:
-    global STORE
+    global STORE, ASSETS
     parser = argparse.ArgumentParser(description="YuE2 本地整合包服务")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8189)
@@ -958,6 +1786,7 @@ def main(argv=None) -> int:
         instance_lock.close()
         raise
     try:
+        ASSETS = AssetLibrary(ROOT)
         STORE = JobStore()
     except BaseException:
         server.server_close()

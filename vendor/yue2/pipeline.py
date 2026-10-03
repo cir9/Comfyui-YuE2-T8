@@ -52,7 +52,7 @@ class SymbolicPlan:
                 raise ValueError("Invalid plan artifact")
             if sha256_file(directory / name) != digest:
                 raise ValueError("Saved plan changed; supply modified ABC as an external planner input")
-        data = json.loads((directory / "plan.json").read_text())
+        data = json.loads((directory / "plan.json").read_text(encoding="utf-8"))
         for field, filename in (("abc_ids", "abc_tokens.npy"), ("prefix", "prefix.npy")):
             array = np.load(directory / filename, allow_pickle=False)
             if array.ndim != 1 or array.dtype.kind not in "iu" or array.tolist() != data[field]:
@@ -123,7 +123,7 @@ class YuE2Pipeline:
                  backend="torch", generation_config=None, verify_hashes=True,
                  vae_core_frames=None, quantization="none", offload_ar=True, progress=True,
                  nar_attention="sdpa", nar_query_chunk_size=256, on_stage_progress=None,
-                 on_memory=None):
+                 on_memory=None, model_loading="auto"):
         if not isinstance(progress, bool):
             raise TypeError("progress must be True or False")
         self.progress = progress
@@ -140,6 +140,8 @@ class YuE2Pipeline:
             raise ValueError("quantization must be none or fp8")
         if not 0 < memory_budget_gib:
             raise ValueError("memory_budget_gib must be positive")
+        if vae_core_frames is not None and (type(vae_core_frames) is not int or vae_core_frames <= 0):
+            raise ValueError("vae_core_frames must be a positive integer")
         if device == "auto":
             device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
         self.device = torch.device(device)
@@ -153,8 +155,15 @@ class YuE2Pipeline:
         torch.set_float32_matmul_precision("highest")
         self.model_dir, self.vae_dir = Path(model_dir), Path(vae_dir)
         self.backend, self.quantization = backend, quantization
+        from .offloading import use_cpu_offload
+        physical = torch.cuda.get_device_properties(self.device).total_memory / 2**30 if self.device.type == "cuda" else None
+        self.model_loading = model_loading
+        self.cpu_offload_enabled = use_cpu_offload(model_loading, self.device, memory_budget_gib, physical, backend, quantization)
+        self.model_transform = None
+        if self.cpu_offload_enabled:
+            self.backend = "torch-eager"
         self.memory_budget_gib = float(memory_budget_gib)
-        self.vae_core_frames = vae_core_frames if vae_core_frames is not None else (512 if memory_budget_gib <= 12 else 1024)
+        self.vae_core_frames = vae_core_frames if vae_core_frames is not None else (128 if self.cpu_offload_enabled else 512 if memory_budget_gib <= 12 else 1024)
         self.offload_ar = offload_ar
         self.generation_config = generation_config or GenerationConfig()
         self.tokenizer = YuE2TextTokenizer(self.model_dir / "qwen.tiktoken")
@@ -217,7 +226,7 @@ class YuE2Pipeline:
                    "generation_config": self.generation_config.to_dict(), "source_weights": self.weights})
 
     def _load_model(self, for_nar=False):
-        loading = self._model is None or next(self._model.parameters()).device != self.device
+        loading = self._model is None or (not getattr(self._model, "_yue2_cpu_offloaded", False) and next(self._model.parameters()).device != self.device)
         with self._status("Loading model") if loading else nullcontext():
             if self._model is None:
                 from .modeling_yue2 import YuE2ForCausalLM
@@ -225,6 +234,11 @@ class YuE2Pipeline:
                 self._model = YuE2ForCausalLM.from_pretrained(self.model_dir, local_files_only=True,
                               torch_dtype=torch.bfloat16, low_cpu_mem_usage=True).eval()
                 self.load_timing["mot_load_seconds"] = time.perf_counter() - start
+                if self.model_transform is not None:
+                    self._model = self.model_transform(self._model)
+            if self.cpu_offload_enabled:
+                from .offloading import enable_cpu_offload
+                return enable_cpu_offload(self._model, self.device)
             if self.quantization == "fp8" and not for_nar:
                 from .quantization import prepare_fp8_ar
                 prepare_fp8_ar(self._model, self.device)
@@ -322,6 +336,9 @@ class YuE2Pipeline:
         if self.backend == "vllm":
             from .fast import close_vllm
             close_vllm(self)
+        if self._model is not None:
+            from .offloading import disable_cpu_offload
+            disable_cpu_offload(self._model)
         self._model, self._vae = None, None
         if self.device.type == "cuda":
             torch.cuda.empty_cache()
@@ -336,6 +353,8 @@ class YuE2Pipeline:
         from .modeling_vae import YuE2VAE
         with self._status("Loading audio decoder"):
             if self._model is not None:
+                from .offloading import disable_cpu_offload
+                disable_cpu_offload(self._model)
                 self._model.to("cpu")
             if self.device.type == "cuda":
                 torch.cuda.empty_cache()
@@ -387,6 +406,7 @@ class YuE2Pipeline:
                 "cot": request.cot, "cfg_scale": request.guidance,
                 "cfg_negative": "instruction_only" if request.cot == "off" else "same_instruction_and_exact_abc",
                 "backend": self.backend, "quantization": self.quantization,
+                "model_loading": "cpu-offload" if self.cpu_offload_enabled else "gpu",
                 "model_dtype": "bfloat16", "vae_dtype": "float32", "vae_decode": "halo_crop",
                 "vae_core_frames": self.vae_core_frames, "vae_halo_frames": 16,
                 "device": str(self.device), "memory_budget_gib": self.memory_budget_gib,

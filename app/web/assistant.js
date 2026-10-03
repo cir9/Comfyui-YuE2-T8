@@ -1,10 +1,24 @@
 /* Standalone WebUI only. Drafts are revisioned; credentials never enter them. */
-const assistant = {config: null, defaults: {}, result: null, job: null, polling: false, originalLyrics: '', resultEdited: false, resultJobId: null,
-  drafts: {}, providers: {}, localModels: [], remoteModels: {}, providerSelections: {}, providerBaseUrls: {}, providerCredentials: {}, activeProvider: null,
-  ticks: {assistant: 0, create: 0, plan: 0, cover: 0}, queues: {}, timers: {}, undo: null, sending: null};
+const assistant = {config: null, defaults: {}, result: null, job: null, starting: false, startingDone: Promise.resolve(), polling: false, pollToken: 0, pollingJobId: '', pollingProjectId: '', originalLyrics: '', resultEdited: false, resultJobId: null,
+  drafts: {}, providers: {}, localModels: [], remoteModels: {}, providerSelections: {}, providerBaseUrls: {}, providerCredentials: {}, providerCredentialScopes: {}, providerBudgets: {}, activeProvider: null, credential: null, modelRefreshBusy: false, modelRefreshRevision: 0,
+  ticks: {assistant: 0, create: 0, plan: 0, cover: 0}, queues: {}, timers: {}, undo: null, sending: null,
+  projectId: '', baselines: {}, switchQueue: Promise.resolve()};
 const assistantPost = (path, value) => api(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(value)});
 const assistantText = (id, text) => { $(id).textContent = text; };
 const cloneText = value => JSON.parse(JSON.stringify(value));
+const CUSTOM_MODEL = '__custom__';
+const ABC_COMPOSE = '自动创作 ABC（T8 LLM）/ Compose';
+const optionLabels = new Map([
+  ['AUTO（有词保留，无词创作）','自动判断（有词保留，无词创作）'],
+  ['生成新歌词 / New lyrics','生成新歌词'], ['严格保留歌词 / Preserve','严格保留歌词'],
+  ['定向改词 / Edit section','定向修改指定段落'], ['纯器乐 / Instrumental','纯器乐'],
+  ['自动创作 ABC（T8 LLM）/ Compose','由 AI 自动创作 ABC'],
+  ['交给下游 YuE2 规划（ABC 留空）/ Downstream','交给 YuE2 规划（ABC 留空）'],
+  ['标准 / Standard','标准'], ['创作审校 / Reviewed','加强审校'],
+  ['保留 / Preserve','保留'], ['去和弦，保留双声部旋律 / Strip chords','去除和弦，保留双声部旋律'],
+  ['strict','严格遵循'], ['balanced','平衡'], ['creative','自由创作']
+]);
+const optionLabel = value => optionLabels.get(value) || value;
 const formFields = form => Object.fromEntries([...form.elements].filter(el => el.name).map(el => [el.name, el.type === 'checkbox' ? el.checked : el.type === 'number' ? Number(el.value) : el.value]));
 function putFields(form, fields) {
   for (const [key, value] of Object.entries(fields || {})) {
@@ -27,12 +41,12 @@ function readAssistantResult() {
   return r;
 }
 function captureDraft(panel) {
-  if (panel === 'assistant') return {values: assistantValues(), result: readAssistantResult(), job_id: assistant.job?.id || null, result_edited: assistant.resultEdited, result_job_id: assistant.resultJobId};
-  if (panel === 'create') return {form: formFields($('#create-form'))};
+  if (panel === 'assistant') return {defaults_version: 2, values: assistantValues(), result: readAssistantResult(), job_id: assistant.job?.id || null, result_edited: assistant.resultEdited, result_job_id: assistant.resultJobId};
+  if (panel === 'create') {const form=formFields($('#create-form')),model=$('#create-form [data-style-model]');if(model?.dataset.pendingModelId)form.style_model_asset_id=model.dataset.pendingModelId;return {form};}
   if (panel === 'plan') return {form: formFields($('#plan-form')), abc: $('#plan-abc').value,
-    exact: $('#plan-exact').checked, plan: planState ? {source: planState.source || 'saved_exact', plan_dir: planState.plan_dir || null, request: planState.request || {}} : null};
+    exact: $('#plan-exact').checked, plan: planState ? {source: planState.source || 'saved_exact', abc_status: planState.abc_status || null, plan_dir: planState.plan_dir || null, request: planState.request || {}} : null};
   return {abc: $('#cover-abc').value, lyrics: $('#cover-lyrics').value, style: $('#cover-style').value,
-    seed: $('#cover-seed').value, instrumental: $('#cover').dataset.instrumental === 'true', visible: !$('#cover-review').classList.contains('hidden')};
+    seed: $('#cover-seed').value, mode: $('#cover-mode').value, instrumental: $('#cover').dataset.instrumental === 'true', visible: !$('#cover-review').classList.contains('hidden')};
 }
 function applyDraft(panel, draft) {
   if (!draft || !Object.keys(draft).length) return;
@@ -43,6 +57,8 @@ function applyDraft(panel, draft) {
     assistant.resultEdited = Boolean(draft.result_edited); assistant.resultJobId = draft.result_job_id || null;
     if (draft.job_id) assistant.job = {id: draft.job_id};
   } else if (panel === 'create') {
+    const model=$('#create-form [data-style-model]'),id=String(draft.form?.style_model_asset_id||'');
+    if(model){delete model.dataset.pendingModelId;if(id&&![...model.options].some(option=>option.value===id))model.dataset.pendingModelId=id;}
     putFields($('#create-form'), draft.form); updateInstrumental('create');
   } else if (panel === 'plan') {
     putFields($('#plan-form'), draft.form);
@@ -52,13 +68,14 @@ function applyDraft(panel, draft) {
     $('#plan-exact').checked = Boolean(draft.exact && !imported);
     $('#plan-exact').disabled = imported;
     $('#plan-abc').disabled = $('#plan-exact').checked;
-    $('#plan-badge').textContent = imported ? '外部导入谱 · 重新生成' : '原始计划';
+    $('#plan-badge').textContent = imported && planState?.abc_status && planState.abc_status !== 'validated' ? '未校验导入谱 · 请先修改' : imported ? '外部导入谱 · 重新生成' : '原始计划';
     $('#plan-workbench').classList.toggle('hidden', !planState);
     updateInstrumental('plan');
   } else {
     for (const key of ['abc', 'lyrics', 'style', 'seed']) if (draft[key] !== undefined) $(`#cover-${key}`).value = draft[key];
     $('#cover').dataset.instrumental = String(Boolean(draft.instrumental));
     $('#cover-review').classList.toggle('hidden', !draft.visible);
+    window.setCoverMode?.(draft.mode || 'generate');
     updateInstrumental('cover');
   }
 }
@@ -67,7 +84,7 @@ function savePanel(panel, value) {
   const snapshot = cloneText(value || captureDraft(panel));
   const operation = (assistant.queues[panel] || Promise.resolve()).catch(() => {}).then(async () => {
     const revision = assistant.drafts[panel]?.revision ?? 0;
-    const saved = await assistantPost('/api/assistant/drafts', {panel, revision, draft: snapshot});
+    const saved = await assistantPost('/api/assistant/drafts', {panel, project_id: assistant.projectId, revision, draft: snapshot});
     assistant.drafts[panel] = saved;
     return saved;
   });
@@ -84,10 +101,66 @@ function changedDraft(panel) {
 window.assistantDraftRevision = panel => assistant.ticks[panel];
 window.assistantDraftChanged = changedDraft;
 window.assistantCaptureDraft = captureDraft;
+function draftEndpoint(projectId = assistant.projectId) {
+  return '/api/assistant/drafts' + (projectId ? `?project_id=${encodeURIComponent(projectId)}` : '');
+}
+function resetDraftPanel(panel) {
+  if (panel === 'assistant') {
+    assistant.result = null; assistant.job = null; assistant.resultEdited = false; assistant.resultJobId = null;
+    $('#assistant-result').classList.add('hidden'); $('#assistant-progress').replaceChildren();
+  } else if (panel === 'plan') {
+    planState = null; $('#plan-workbench').classList.add('hidden'); $('#plan-abc').value = '';
+  } else if (panel === 'cover') {
+    $('#cover-review').classList.add('hidden');
+  }
+  applyDraft(panel, cloneText(assistant.baselines[panel] || {}));
+}
+async function switchAssistantProject(projectId) {
+  await assistant.startingDone;
+  projectId = String(projectId || '');
+  if (projectId === assistant.projectId) return;
+  const previousProjectId=assistant.projectId,previousJobId=assistant.job?.id||'';
+  assistant.pollToken++;
+  assistant.polling = false;
+  assistant.pollingJobId = '';
+  assistant.pollingProjectId = '';
+  applyAssistantActionState();
+  const panels=['create','plan','cover','assistant'],elements=panels.map(panel=>$(`#${panel}`));
+  elements.forEach(element=>element.inert=true);
+  try {
+    for (const panel of panels) clearTimeout(assistant.timers[panel]);
+    await Promise.all(panels.map(panel => savePanel(panel)));
+    const drafts = await api(draftEndpoint(projectId));
+    assistant.projectId = projectId;
+    assistant.queues = {};
+    assistant.drafts = drafts;
+    for (const selector of ['#cover-file','#reference-file']) {
+      const input=$(selector); clearLocalInputReference(input); input.value='';
+      input.dispatchEvent(new CustomEvent('local-source-change',{bubbles:true}));
+    }
+    for (const panel of panels) {
+      resetDraftPanel(panel); applyDraft(panel, drafts[panel]?.draft); assistant.ticks[panel]++;
+    }
+    assistantText('#assistant-draft-status', projectId ? '已切换到当前项目的独立草稿' : '已切换到未归档草稿');
+    await restoreAssistantJobForCurrentScope().catch(error=>assistantText('#assistant-progress',`任务状态读取失败：${error.message}，稍后可刷新恢复。`));
+  } catch(error) {
+    if(assistant.projectId===previousProjectId&&previousJobId){assistant.job={id:previousJobId};await restoreAssistantJobForCurrentScope().catch(()=>{});}
+    throw error;
+  } finally { elements.forEach(element=>element.inert=false); }
+}
+window.assistantSwitchProject = projectId => {
+  const operation=assistant.switchQueue.catch(()=>{}).then(()=>switchAssistantProject(projectId));
+  assistant.switchQueue=operation;
+  return operation;
+};
 function updateInstrumental(panel) {
   if (panel === 'cover') {
     const instrumental = $('#cover').dataset.instrumental === 'true';
-    $('#generate-reference-cover').disabled = instrumental || !$('#reference-file').files[0];
+    const backend=$('#voice-backend').value,direct=$('#cover-mode').value==='direct';
+    $('#generate-reference-cover').disabled = instrumental ||
+      (backend!=='rvc'&&!inputHasSource($('#reference-file'))) ||
+      (backend!=='seed-vc'&&!$('#rvc-cover-model').value) ||
+      (direct&&!inputHasSource($('#cover-file')));
     $('#generate-reference-cover').title = instrumental ? '纯器乐没有可转换的人声，请使用旋律重制' : '';
     return;
   }
@@ -114,42 +187,157 @@ function showAssistantResult(result) {
   assistantText('#assistant-outcome', partial ? '部分完成 · 已保留可用内容' : result.outcome === 'success' ? '创作完成' : '已保存的创作内容');
   assistantText('#assistant-result-note', '文本与谱面检查不等于听感验收。发送仅填入目标页面，不会自动开始制作音频。');
   renderAbcState();
+  const compose = $('#assistant-compose-abc');
+  compose.classList.toggle('hidden', (Boolean(assistant.result.abc.trim()) && assistant.result.abc_status !== 'failed') || assistant.result.cot === 'off');
+  compose.textContent = assistant.result.abc_status === 'failed' ? '重新生成 ABC' : '补写 ABC';
   assistantText('#assistant-report', JSON.stringify(result.report || result, null, 2));
 }
 function renderAbcState() {
-  const labels = {validated: 'ABC 已通过原生格式校验；编辑后需要重新校验。', failed: '作谱未通过，歌词与曲风已保留。可单独重试作谱，或交给 YuE2 规划。',
+  const labels = {validated: 'ABC 已通过原生格式校验；编辑后需要重新校验。', failed: '已保留模型返回的 ABC，但未通过原生格式校验。仍可原样发送到乐谱计划的 ABC 提示词框，也可以下载、修改或点“重新生成 ABC”。',
     downstream_yue2: 'ABC 留空：将在目标页面交给 YuE2 规划。', off: '当前选择不用谱面。', pending: 'ABC 已修改，发送前将重新校验。',
     not_requested: '尚未生成 ABC。'};
-  assistantText('#assistant-abc-status', labels[assistant.result?.abc_status] || '谱面状态待检查');
+  const status = assistant.result?.abc_status || 'not_requested';
+  const reason = status === 'failed' ? String(assistant.result?.report?.abc?.error || '').trim().slice(0, 500) : '';
+  $('#assistant-abc-status').dataset.state = status;
+  assistantText('#assistant-abc-status', (labels[status] || '谱面状态待检查') + (reason ? ` 失败原因：${reason}` : ''));
 }
 function configFromForm() {
   const values = formFields($('#assistant-config-form'));
-  values.credential_id = assistant.providerCredentials[values.provider] || '';
+  values.credential_id = assistantCurrentCredential();
   values.extra_parameters = JSON.parse($('#assistant-extra').value || '{}');
   return values;
+}
+function assistantModelScope(config = null) {
+  const provider = config?.provider || $('#assistant-provider').value;
+  if (provider === 'local') return 'local';
+  const base = String(provider === 'compatible' ? config?.base_url ?? $('#assistant-base-url').value : assistant.providers[provider]?.base_url || '').trim().replace(/\/+$/, '');
+  try {
+    const path = new URL(base).pathname;
+    const chat = base.endsWith('/chat/completions') ? base : base + (/\/v\d+$/i.test(path) ? '/chat/completions' : '/v1/chat/completions');
+    return `${provider}:${chat}`;
+  } catch { return `${provider}:${base}`; }
+}
+function assistantCurrentCredential() {
+  const provider = $('#assistant-provider').value;
+  return assistant.providerCredentialScopes[provider] === assistantModelScope() ? assistant.providerCredentials[provider] || '' : '';
+}
+function assistantModelListKey(config = null) {
+  return `${assistantModelScope(config)}:${config?.credential_id ?? assistantCurrentCredential()}`;
+}
+function assistantRemoteModels() {
+  const key = assistantModelListKey();
+  if (assistant.remoteModels[key]) return assistant.remoteModels[key];
+  try {
+    const cached = JSON.parse(savedValue(`assistant-model-list:${assistantModelScope()}`) || 'null');
+    const saved = cached?.models;
+    if (cached?.credential_id === assistantCurrentCredential() && Array.isArray(saved) && saved.length <= 500 && saved.every(id => typeof id === 'string' && id.trim() && id.length <= 512)) {
+      return assistant.remoteModels[key] = saved.map(id => ({id, label: id}));
+    }
+  } catch { /* An unavailable or damaged cache must not prevent manual setup. */ }
+  return null;
+}
+function assistantCredentialError(message) {
+  return /API\s*Key|API\s*凭据|凭据不存在|凭据待补|重新填写/.test(String(message || ''));
+}
+function openAssistantSettings(focus = true) {
+  const settings = $('#assistant-settings');
+  settings.open = true;
+  settings.scrollIntoView({behavior: 'smooth', block: 'start'});
+  if (focus) requestAnimationFrame(() => ($('#assistant-provider').value === 'local' || (assistantCurrentCredential() || $('#assistant-key').value.trim()) && !$('#assistant-model').value.trim() ? $('#assistant-model-choice') : $('#assistant-key')).focus());
+}
+function assistantChannelReady() {
+  const provider=$('#assistant-provider').value||assistant.config?.provider||'seedance';
+  return Boolean($('#assistant-model').value.trim()) && (provider==='local'||Boolean($('#assistant-key').value.trim()||assistantCurrentCredential()));
+}
+function applyAssistantActionState() {
+  const ready=assistantChannelReady(),disabled=assistant.starting||assistant.polling||assistant.modelRefreshBusy||!ready;
+  const missingHint=$('#assistant-provider').value==='local'?'请先选择本地 GGUF 模型':'请先设置当前渠道的 API Key，并选择或手动填写模型 ID';
+  for(const selector of ['#assistant-generate','#assistant-test','#assistant-retry','#assistant-compose-abc']){
+    const button=$(selector);if(!button)continue;button.disabled=disabled;
+    button.title=!ready?missingHint:assistant.starting?'正在提交任务，请稍候':assistant.modelRefreshBusy?'正在刷新模型列表，请稍候':assistant.polling?'当前创作任务结束后可再次操作':selector==='#assistant-test'?'测试当前选定模型的聊天连接，可能产生 API 费用；获取列表请点刷新模型':'';
+  }
+  const remove=$('#assistant-delete-key'),provider=$('#assistant-provider').value;
+  if(remove)remove.disabled=!assistant.providerCredentials[provider]||assistant.starting||assistant.polling||assistant.modelRefreshBusy;
+  for (const selector of ['#assistant-save-config', '#assistant-refresh-models']) $(selector).disabled = assistant.starting||assistant.modelRefreshBusy;
+}
+function renderAssistantChannelStatus() {
+  const provider = $('#assistant-provider').value || assistant.config?.provider || 'seedance';
+  const details = assistant.providers[provider] || {};
+  const savedProvider = assistant.config?.provider === provider;
+  const isLocal = provider === 'local';
+  const pendingKey=Boolean($('#assistant-key').value.trim());
+  const hasCredential = pendingKey || Boolean(assistantCurrentCredential());
+  const ready = assistantChannelReady();
+  const card = $('#assistant-channel-status'), signup = $('#assistant-status-signup');
+  card.dataset.state = ready ? 'ready' : 'missing';
+  if (isLocal) {
+    assistantText('#assistant-channel-title', ready ? '本地 LLM 已选择' : '请先选择本地 GGUF 模型');
+    assistantText('#assistant-channel-detail', ready ? `${$('#assistant-model').value}；保存后可测试模型连接。` : '本地模式无需 API Key，请选择 GGUF 文件并保存设置。');
+    $('#assistant-open-settings').textContent = ready ? '更改本地模型' : '设置本地 GGUF';
+  } else {
+    assistantText('#assistant-channel-title', ready ? 'AI 创作渠道已配置' : hasCredential ? '请先选择或填写模型 ID' : '开始创作前，请先设置 API Key');
+    assistantText('#assistant-channel-detail', ready ? `${details.label || '当前渠道'} · ${$('#assistant-model').value}；${pendingKey?'API Key 待随本次操作保存':'凭据已就绪'}。` : hasCredential ? '点击“保存设置 / 刷新模型”获取模型列表；渠道不提供列表时，选择“自定义输入模型”填写完整 ID。' : `当前渠道：${details.label || 'API'}。填写该地址对应的 API Key 后才能生成歌词、曲风或 ABC。`);
+    $('#assistant-open-settings').textContent = ready ? '更改渠道 / API Key' : hasCredential ? '选择模型' : '设置 API Key';
+  }
+  signup.classList.toggle('hidden', isLocal || !details.signup_url);
+  signup.href = details.signup_url || '#';
+  signup.textContent = details.signup_url ? `获取${details.label || ''} API Key` : '';
+  assistantText('#assistant-capability', ready ? (isLocal ? '本地模型待连接测试' : 'API 凭据已就绪') : (isLocal ? '尚未选择 GGUF' : hasCredential ? '尚未选择模型' : '尚未配置 API Key'));
+  if (!ready && !isLocal && savedProvider) $('#assistant-settings').open = true;
+  applyAssistantActionState();
+}
+function appendAssistantError(target, message) {
+  const box = document.createElement('div'); box.className = assistantCredentialError(message) ? 'assistant-credential-error' : 'assistant-inline-note';
+  const error = document.createElement('p'); error.textContent = message; box.append(error);
+  if (assistantCredentialError(message)) {
+    assistant.credential = {...(assistant.credential || {}), required: true, available: false, reason: 'missing'};
+    renderAssistantChannelStatus();
+    const action = document.createElement('button'); action.type = 'button'; action.className = 'primary compact'; action.textContent = '设置 API Key'; action.onclick = () => openAssistantSettings(true); box.append(action);
+  }
+  target.append(box);
+}
+function showAssistantError(message) {
+  const target = $('#assistant-progress'); target.replaceChildren(); appendAssistantError(target, message);
 }
 function renderAssistantModels() {
   const provider = $('#assistant-provider').value;
   const details = assistant.providers[provider] || {};
   const items = provider === 'local' ? assistant.localModels :
-    (assistant.remoteModels[provider] || (details.models || []).map(id => ({id, label: id})));
+    (assistantRemoteModels() || (details.models || []).map(id => ({id, label: id})));
   const seen = new Set(), options = [];
   for (const item of items) {
     const id = typeof item === 'string' ? item : item.id;
     if (!id || seen.has(id)) continue;
     seen.add(id);
     const opt = document.createElement('option'); opt.value = id;
-    opt.label = typeof item === 'string' ? item : item.label || id;
+    opt.textContent = typeof item === 'string' ? item : item.label || id;
     options.push(opt);
   }
-  $('#assistant-models').replaceChildren(...options);
+  const suggestions = options.map(option => option.cloneNode(true));
+  const custom = document.createElement('option'); custom.value = CUSTOM_MODEL; custom.textContent = '自定义输入模型'; options.push(custom);
+  const current = $('#assistant-model').value.trim();
+  $('#assistant-model-choice').replaceChildren(...options);
+  $('#assistant-model-choice').value = current && seen.has(current) ? current : CUSTOM_MODEL;
+  $('#assistant-models').replaceChildren(...suggestions);
+  $('#assistant-custom-model-field').classList.toggle('hidden', $('#assistant-model-choice').value !== CUSTOM_MODEL);
+}
+function assistantModelChoiceChanged(focus = true) {
+  const choice = $('#assistant-model-choice').value;
+  const custom = choice === CUSTOM_MODEL;
+  $('#assistant-custom-model-field').classList.toggle('hidden', !custom);
+  $('#assistant-model').value = custom ? '' : choice;
+  assistant.providerSelections[$('#assistant-provider').value] = $('#assistant-model').value;
+  if (custom && focus) $('#assistant-model').focus();
+  renderAssistantChannelStatus();
 }
 function providerChanged() {
+  assistant.modelRefreshRevision++;
   const provider = $('#assistant-provider').value;
   const previous = assistant.activeProvider;
   if (previous) {
     assistant.providerSelections[previous] = $('#assistant-model').value;
     assistant.providerBaseUrls[previous] = $('#assistant-base-url').value;
+    assistant.providerBudgets[previous] = Number($('#assistant-config-form').elements.max_tokens.value);
   }
   assistant.activeProvider = provider;
   const details = assistant.providers[provider] || {};
@@ -161,33 +349,40 @@ function providerChanged() {
     const localDefault = assistant.localModels.find(item => item.id === details.default_model)?.id || assistant.localModels[0]?.id;
     $('#assistant-model').value = assistant.providerSelections[provider] || details.default_model || (provider === 'local' ? localDefault || '' : '');
   }
+  if (previous && previous !== provider) {
+    $('#assistant-config-form').elements.max_tokens.value = assistant.providerBudgets[provider] ?? (provider === 'local' ? 4096 : 32768);
+  }
   const signup = $('#assistant-signup');
   signup.classList.toggle('hidden', !details.signup_url);
   signup.href = details.signup_url || '#';
   signup.textContent = provider === 'seedance' ? '获取贞贞平价小屋 API Key' : provider === 'workshop' ? '获取贞贞 AI 工坊 API Key' : '';
-  $('#assistant-refresh-models').textContent = provider === 'local' ? '刷新本地 GGUF' : '获取模型 LIST';
-  $('#assistant-model').placeholder = provider === 'local' ? '选择扫描到的 GGUF 文件' :
-    provider === 'compatible' ? '填写模型 ID，或获取模型 LIST' : '选择默认模型，或填写其他模型 ID';
+  $('#assistant-refresh-models').textContent = provider === 'local' ? '刷新本地 GGUF 模型' : '获取模型列表';
   renderAssistantModels();
-  assistantText('#assistant-model-list-status', details.models?.length && provider !== 'local' ? `已提供 ${details.models.length} 个渠道默认模型` : '');
+  const cached = provider === 'local' ? null : assistantRemoteModels();
+  assistantText('#assistant-model-list-status', cached ? `已恢复 ${cached.length} 个模型；可再次刷新` : details.models?.length && provider !== 'local' ? `已提供 ${details.models.length} 个渠道默认模型` : provider === 'compatible' ? '填写地址和 API Key 后，点击“保存设置 / 刷新模型”获取列表；也可手动填写模型 ID。' : '');
   if (previous && previous !== provider && assistant.config?.provider !== provider) {
     assistantText('#assistant-config-status', provider === 'local' ? '已切换为本地模式，请保存设置' : '已切换渠道，请填写该渠道对应的 API Key');
   }
+  renderAssistantChannelStatus();
 }
 async function saveAssistantConfig() {
   let config = configFromForm();
+  const scope = assistantModelScope(config);
   const key = $('#assistant-key').value;
   if (key) {
     const saved = await assistantPost('/api/assistant/credentials', {api_key: key, config, remember: $('#assistant-remember-key').checked});
     config.credential_id = saved.credential_id;
     assistant.providerCredentials[config.provider] = saved.credential_id;
-    $('#assistant-key').value = '';
+    assistant.providerCredentialScopes[config.provider] = scope;
+    if (assistantModelScope() === scope && $('#assistant-key').value === key) $('#assistant-key').value = '';
   }
   const info = await assistantPost('/api/assistant/config', config);
   assistant.config = info.config;
+  assistant.credential = info.credential;
   updateModelInfo(info);
+  renderAssistantChannelStatus();
   assistantText('#assistant-config-status', '设置已保存' + (config.credential_id ? ' · 已关联凭据' : ''));
-  return config;
+  return info.config;
 }
 function updateModelInfo(info) {
   assistant.providers = info.providers || assistant.providers;
@@ -197,25 +392,47 @@ function updateModelInfo(info) {
   assistantText('#assistant-capability', info.local_runtime ? `${info.local_gpu_offload ? '本地 CUDA 环境已就绪' : '本地环境仅通过 CPU 检查'}，需通过模型连接测试` : '本地 GGUF 环境未完成安装 · API 可用');
 }
 async function refreshAssistantModels() {
-  const provider = $('#assistant-provider').value;
-  const button = $('#assistant-refresh-models');
-  button.disabled = true;
+  if (assistant.modelRefreshBusy) return;
+  const scope = assistantModelScope(), revision = assistant.modelRefreshRevision;
+  const isCurrent = () => assistantModelScope() === scope && assistant.modelRefreshRevision === revision;
+  let saved = false;
+  assistant.modelRefreshBusy = true;
+  applyAssistantActionState();
+  assistantText('#assistant-config-status', '正在保存设置…');
   try {
     const config = await saveAssistantConfig();
-    if (provider === 'local') {
+    saved = true;
+    if (!isCurrent()) return;
+    if (config.provider === 'local') {
       assistantText('#assistant-model-list-status', `已扫描到 ${assistant.localModels.length} 个本地 GGUF`);
+      return;
+    }
+    if (!assistant.credential?.available) {
+      assistantText('#assistant-model-list-status', '设置已保存。请填写该地址对应的 API Key 后刷新；也可手动填写模型 ID。');
       return;
     }
     assistantText('#assistant-model-list-status', '正在读取渠道模型 LIST…');
     const result = await assistantPost('/api/assistant/models', {config});
-    assistant.remoteModels[provider] = result.models.map(id => ({id, label: id}));
+    const key = assistantModelListKey(config);
+    assistant.remoteModels[key] = result.models.map(id => ({id, label: id}));
+    savedValue(`assistant-model-list:${assistantModelScope(config)}`, JSON.stringify({credential_id: config.credential_id, models: result.models}));
+    if (!isCurrent()) return;
+    if (!$('#assistant-model').value.trim()) {
+      $('#assistant-model').value = result.models[0];
+      const info = await assistantPost('/api/assistant/config', {...config, model: result.models[0]});
+      assistant.config = info.config;
+      assistant.credential = info.credential;
+      if (!isCurrent()) return;
+    }
     renderAssistantModels();
-    if (!result.models.includes($('#assistant-model').value)) $('#assistant-model').value = result.models[0];
-    assistant.providerSelections[provider] = $('#assistant-model').value;
+    assistant.providerSelections[config.provider] = $('#assistant-model').value;
     assistantText('#assistant-model-list-status', `已读取 ${result.count} 个模型；仍可手动填写 ID`);
   } catch (error) {
-    assistantText('#assistant-model-list-status', `${error.message}；已保留默认模型和手动填写`);
-  } finally { button.disabled = false; }
+    if (isCurrent()) {
+      if (!saved) assistantText('#assistant-config-status', `设置保存失败：${error.message}`);
+      assistantText('#assistant-model-list-status', `${error.message}；已填写的模型仍保留，可选择“自定义输入模型”手动填写完整 ID。`);
+    }
+  } finally { assistant.modelRefreshBusy = false; renderAssistantChannelStatus(); }
 }
 function updateCostHint() {
   const v = assistantValues(), score = v.abc_source?.includes('Compose') && v.cot !== 'off';
@@ -224,14 +441,18 @@ function updateCostHint() {
 }
 const assistantStages = {assistant_lyrics: '创作歌词', assistant_lyrics_language_repair: '修正歌词语言', assistant_style: '创作曲风', assistant_review: '审校文本', assistant_review_repair: '修订文本', assistant_abc: '创作 ABC', assistant_abc_repair: '修正 ABC', assistant_connection: '测试模型连接'};
 window.assistantStageLabel = stage => assistantStages[stage];
-async function pollAssistant(id, startingRevision) {
-  if (assistant.polling) return;
+async function pollAssistant(id, startingRevision, projectId = assistant.projectId) {
+  if (assistant.polling && assistant.pollingJobId === id && assistant.pollingProjectId === projectId) return;
+  const pollToken = ++assistant.pollToken;
   assistant.polling = true;
-  $('#assistant-generate').disabled = true; $('#assistant-test').disabled = true; $('#assistant-retry').disabled = true;
+  assistant.pollingJobId = id;
+  assistant.pollingProjectId = projectId;
+  applyAssistantActionState();
   try {
     let lastResult = '';
     while (true) {
       const job = await api(`/api/jobs/${id}`);
+      if (pollToken !== assistant.pollToken || assistant.projectId !== projectId) return;
       assistant.job = job;
       const seconds = Math.max(0, Math.round(Date.now() / 1000 - (job.started_at || job.created_at)));
       const progress = $('#assistant-progress'); progress.replaceChildren();
@@ -243,27 +464,71 @@ async function pollAssistant(id, startingRevision) {
         cancel.onclick = () => assistantPost(`/api/jobs/${id}/cancel`, {}); progress.append(cancel);
       }
       const signature = JSON.stringify(job.result || {});
-    if (job.result && signature !== lastResult && assistant.ticks.assistant === startingRevision && !job.result.connection) {
+      if (job.result && signature !== lastResult && assistant.ticks.assistant === startingRevision && !job.result.connection) {
         showAssistantResult(job.result); lastResult = signature;
+        // Each paid model checkpoint is useful by itself. Persist it immediately so
+        // a workspace switch, reload, or long-running later stage cannot hide it.
+        await savePanel('assistant').catch(error => assistantText('#assistant-draft-status', `阶段结果未保存：${error.message}`));
       }
       if (TERMINAL.has(job.status)) {
-        if (job.error) { const error = document.createElement('p'); error.textContent = job.error; progress.append(error); }
+        if (job.error) appendAssistantError(progress, job.error);
         if (job.result?.connection) line.textContent = '模型连接测试通过；这是文本请求测试，不代表作谱或音乐生成已验收。';
         if (assistant.ticks.assistant !== startingRevision && job.result && !job.result.connection) {
           const restore = document.createElement('button'); restore.className = 'ghost'; restore.textContent = '查看已完成结果（保留当前草稿前请先下载）';
-          restore.onclick = () => { if (confirm('用这个任务的结果替换当前编辑区？')) { showAssistantResult(job.result); changedDraft('assistant'); } }; progress.append(restore);
+          restore.onclick = async () => { if (await uiConfirm('用这个任务的结果替换当前编辑区？')) { showAssistantResult(job.result); changedDraft('assistant'); } }; progress.append(restore);
         }
         await savePanel('assistant'); refreshWorkspace(); loadHistory(); break;
       }
       await new Promise(resolve => setTimeout(resolve, 1200));
+      if (pollToken !== assistant.pollToken) return;
     }
-  } catch (error) { assistantText('#assistant-progress', `连接中断：${error.message}。任务可能仍在运行，刷新后可恢复查看。`); }
-  finally { assistant.polling = false; $('#assistant-generate').disabled = false; $('#assistant-test').disabled = false; $('#assistant-retry').disabled = false; }
+  } catch (error) { if(pollToken===assistant.pollToken)assistantText('#assistant-progress', `连接中断：${error.message}。任务可能仍在运行，刷新后可恢复查看。`); }
+  finally { if(pollToken===assistant.pollToken){assistant.polling=false;assistant.pollingJobId='';assistant.pollingProjectId='';applyAssistantActionState();} }
 }
+async function latestAssistantJobForScope(projectId = assistant.projectId) {
+  const scope=projectId||'__global__';
+  const recent = await api(`/api/jobs?limit=1&kind=assistant&exclude_connection=1&project_id=${encodeURIComponent(scope)}`);
+  return recent.jobs.find(job => job.kind === 'assistant' && !job.result?.connection && job.summary !== '测试 LLM 连接'
+    && String(job.project_id || job.request?.project_id || '') === String(projectId || '')) || null;
+}
+async function restoreAssistantJobForCurrentScope() {
+  const id=assistant.job?.id,projectId=assistant.projectId;
+  let current=id ? await api(`/api/jobs/${id}`).catch(()=>null) : null;
+  if(current&&String(current.project_id||current.request?.project_id||'')!==projectId)current=null;
+  // The job store is authoritative. This also recovers when the browser left
+  // before its draft could record the new job id.
+  const latest=await latestAssistantJobForScope(projectId).catch(()=>null);
+  if(latest&&(!current||Number(latest.created_at||0)>Number(current.created_at||0)))current=latest;
+  if(!current){assistant.job=null;return;}
+  assistant.job=current;
+  if(current.result&&!current.result.connection&&!assistant.resultEdited){
+    showAssistantResult(current.result);
+    await savePanel('assistant').catch(error=>assistantText('#assistant-draft-status',`任务结果未保存：${error.message}`));
+  } else if(current.result&&!current.result.connection&&assistant.resultEdited&&TERMINAL.has(current.status)){
+    const notice=$('#assistant-progress'); notice.textContent='该任务已结束。当前编辑已保留，可查看任务的最新结果。';
+    const button=document.createElement('button'); button.className='ghost'; button.textContent='查看最新任务结果';
+    button.onclick=async()=>{if(await uiConfirm('替换当前编辑区？需要保留的内容请先下载。')){showAssistantResult(current.result);changedDraft('assistant');}};
+    notice.append(button);
+  }
+  if(!TERMINAL.has(current.status)){pollAssistant(current.id,assistant.ticks.assistant,projectId);return;}
+  if(current.error)appendAssistantError($('#assistant-progress'),current.error);
+}
+window.assistantRestoreCurrentScope = () => restoreAssistantJobForCurrentScope()
+  .catch(error=>assistantText('#assistant-progress',`任务状态读取失败：${error.message}，稍后可刷新恢复。`));
 async function startAssistant(test = false, retry = false) {
-  if (assistant.polling) return;
+  if (assistant.starting || assistant.polling || assistant.modelRefreshBusy) return;
+  assistant.starting=true;
+  let finish;
+  assistant.startingDone=new Promise(resolve=>{finish=resolve;});
+  const projectId=assistant.projectId;
+  $('#assistant-config-form').inert=true;$('#assistant-form').inert=true;
+  applyAssistantActionState();
   try {
     const config = await saveAssistantConfig(), values = assistantValues();
+    if (config.provider !== 'local' && !assistant.credential?.available) {
+      openAssistantSettings(true);
+      throw new Error('请先填写并保存 API Key，再开始创作。');
+    }
     await savePanel('assistant');
     const body = {values, config, client_request_id: crypto.randomUUID()};
     let job;
@@ -279,12 +544,13 @@ async function startAssistant(test = false, retry = false) {
       if (stage === 'abc') body.values.quality_mode = assistant.defaults.quality_mode;
       job = await assistantPost(`/api/jobs/${assistant.job.id}/retry-assistant`, body);
     } else job = await assistantPost('/api/jobs', {kind: 'assistant', source: 'webui', result_panel: 'assistant', client_request_id: body.client_request_id,
-      request: {values, config, variant_id: crypto.randomUUID(), test_connection: test}});
+      request: {values, config, project_id: projectId, variant_id: crypto.randomUUID(), test_connection: test}});
     assistant.job = job;
-    await savePanel('assistant');
+    pollAssistant(job.id, assistant.ticks.assistant, projectId);
+    await savePanel('assistant').catch(error=>assistantText('#assistant-draft-status',`任务已提交，草稿未保存：${error.message}`));
     refreshWorkspace();
-    pollAssistant(job.id, assistant.ticks.assistant);
-  } catch (error) { assistantText('#assistant-progress', error.message); }
+  } catch (error) { showAssistantError(error.message); }
+  finally {assistant.starting=false;finish();$('#assistant-config-form').inert=false;$('#assistant-form').inert=false;applyAssistantActionState();}
 }
 async function validateAssistantAbc(strip = false, cot) {
   const result = readAssistantResult();
@@ -299,13 +565,13 @@ function prepareTransfer(panel) {
   assistantText('#assistant-send-title', `发送到${{create: '歌曲创作', plan: '乐谱计划', cover: '旋律重制'}[panel]}`);
   for (const name of ['style', 'lyrics', 'abc']) {
     const input = dialog.querySelector(`[name=${name}]`);
-    input.disabled = name === 'abc' && (panel === 'create' || !r.abc.trim());
+    input.disabled = name === 'abc' && (panel === 'create' || !r.abc.trim() || (panel === 'cover' && r.abc_status !== 'validated'));
     input.checked = !input.disabled;
   }
   $('#assistant-send-mode').value = r.cot === 'off' ? '' : panel === 'cover' ? 'melody' : r.cot;
   $('#assistant-send-mode-label').classList.toggle('hidden', panel !== 'plan');
   assistantText('#assistant-send-warning', '将替换目标页面中选中的字段，已有种子与上传音频保留。填入后可撤销。');
-  assistantText('#assistant-send-details', panel === 'cover' && r.abc ? '发送谱面时会去除和弦，并验证两个声部的音高与节奏不变。只选 ABC 可能与目标已有歌词不匹配。' : panel === 'create' && r.abc ? '该页只接收歌词、曲风及规划模式；如需使用这份 ABC，请发送到乐谱计划。' : '有 ABC 时建议整套发送，避免谱面与目标页面的旧歌词错配。');
+  assistantText('#assistant-send-details', panel === 'plan' && r.abc_status !== 'validated' ? '这份 ABC 未通过校验，但会完整原样填入乐谱计划的 ABC 提示词框并标明状态；修改后可再开始生成。' : panel === 'cover' && r.abc ? '发送谱面时会去除和弦，并验证两个声部的音高与节奏不变。只选 ABC 可能与目标已有歌词不匹配。' : panel === 'create' && r.abc ? '该页只接收歌词、曲风及规划模式；如需使用这份 ABC，请发送到乐谱计划。' : '有 ABC 时建议整套发送，避免谱面与目标页面的旧歌词错配。');
   dialog.showModal();
 }
 async function confirmTransfer() {
@@ -318,18 +584,21 @@ async function confirmTransfer() {
     if (!['style', 'lyrics', 'abc'].some(selected)) throw new Error('至少选择一个字段');
     if (panel === 'plan' && !mode) throw new Error('乐谱页需要明确选择旋律或完整谱面；也可取消并发送到歌曲创作，保留 off');
     let abc = null;
-    if (selected('abc')) abc = (await assistantPost('/api/assistant/validate-abc', {abc: r.abc, cot: mode, strip_chords: panel === 'cover'})).abc;
+    if (selected('abc')) abc = r.abc_status === 'validated'
+      ? (await assistantPost('/api/assistant/validate-abc', {abc: r.abc, cot: mode, strip_chords: panel === 'cover'})).abc
+      : r.abc;
     if (panel === 'cover') {
       if (selected('style')) after.style = r.style;
       if (selected('lyrics')) { after.lyrics = r.lyrics; after.instrumental = r.instrumental && !r.lyrics.trim(); }
       if (abc !== null) after.abc = abc;
       after.visible = true;
+      after.mode = 'generate';
     } else {
       if (selected('style')) after.form.style = r.style;
       if (selected('lyrics')) { after.form.lyrics = r.lyrics; after.form.instrumental = r.instrumental && !r.lyrics.trim(); }
       after.form.cot = mode;
       if (panel === 'plan') {
-        if (abc !== null) { after.abc = abc; after.exact = false; after.plan = {source: 'imported_abc', request: {style: after.form.style, lyrics: after.form.lyrics, cot: mode}}; }
+        if (abc !== null) { after.abc = abc; after.exact = false; after.plan = {source: 'imported_abc', abc_status: r.abc_status, request: {style: after.form.style, lyrics: after.form.lyrics, cot: mode}}; }
         else if (after.plan) { after.exact = false; after.plan.source = 'imported_abc'; }
       }
     }
@@ -341,9 +610,11 @@ async function confirmTransfer() {
     assistant.undo = {panel, before, tick: assistant.ticks[panel]};
     dialog.close(); $(`.tab[data-tab=${panel}]`).click();
     const target = panel === 'cover' ? $('#cover-review') : panel === 'plan' && abc ? $('#plan-workbench') : $(`#${panel}-form`);
-    target.scrollIntoView({behavior: 'smooth', block: 'start'});
-    $('#assistant-transfer-notice').classList.remove('hidden');
-    $('#assistant-transfer-notice span').textContent = '已填入草稿，尚未开始生成音频。';
+    const notice = $('#assistant-transfer-notice');
+    target.parentElement.insertBefore(notice, target);
+    notice.classList.remove('hidden');
+    notice.querySelector('span').textContent = '已填入草稿，尚未开始生成音频。';
+    notice.scrollIntoView({behavior: 'smooth', block: 'nearest'});
   } catch (error) { assistantText('#assistant-send-details', error.message); }
 }
 function downloadText(name, text) {
@@ -353,7 +624,8 @@ function downloadText(name, text) {
 window.openAssistantJob = async id => {
   try {
     const data = await api(`/api/assistant/jobs/${id}`);
-    if (assistant.result && !confirm('载入该任务？当前内容可先保存或下载。')) return;
+    if(String(data.request.project_id||'')!==assistant.projectId)throw new Error('这个助手任务属于另一个项目，请先切换到对应项目再载入');
+    if (assistant.result && !await uiConfirm('载入该任务？当前内容可先保存或下载。')) return;
     putFields($('#assistant-form'), data.request.values); assistant.originalLyrics = data.request.values.lyrics || '';
     if (data.job.result) showAssistantResult(data.job.result);
     assistant.job = data.job; changedDraft('assistant'); $('.tab[data-tab=assistant]').click();
@@ -371,27 +643,42 @@ function addAdvanced(defaults, options) {
   for (const [name, caption, type] of fields) {
     const label = document.createElement('label'); label.textContent = caption;
     const input = document.createElement(Array.isArray(type) ? 'select' : type === 'textarea' ? 'textarea' : 'input'); input.name = name;
-    if (Array.isArray(type)) for (const text of type) { const opt = document.createElement('option'); opt.value = text; opt.textContent = text; input.append(opt); }
+    if (Array.isArray(type)) for (const text of type) { const opt = document.createElement('option'); opt.value = text; opt.textContent = optionLabel(text); input.append(opt); }
     else if (input.tagName === 'INPUT') input.type = type || 'text';
     if (type === 'textarea') { input.rows = 7; label.className = 'wide'; }
     input.value = defaults[name] ?? ''; label.append(input); target.append(label);
   }
 }
+function setAssistantLoading(loading) {
+  for (const selector of ['#assistant-config-form', '#assistant-form']) {
+    const form = $(selector);
+    form.inert = loading;
+    form.setAttribute('aria-busy', String(loading));
+  }
+  if (loading) assistantText('#assistant-config-status', '正在读取设置…');
+  else if ($('#assistant-config-status').textContent === '正在读取设置…') assistantText('#assistant-config-status', '设置已载入');
+}
 async function initAssistant() {
+  setAssistantLoading(true);
   for (const panel of ['create', 'plan']) addInstrumentalControl(panel);
   try {
-    const [info, drafts] = await Promise.all([api('/api/assistant/config'), api('/api/assistant/drafts')]);
-    assistant.config = info.config; assistant.defaults = info.defaults; assistant.drafts = drafts; assistant.providers = info.providers;
+    assistant.projectId = window.workbenchProjectId?.() || '';
+    const [info, drafts] = await Promise.all([api('/api/assistant/config'), api(draftEndpoint())]);
+    assistant.config = info.config; assistant.credential = info.credential; assistant.defaults = info.defaults; assistant.drafts = drafts; assistant.providers = info.providers;
     assistant.providerSelections[info.config.provider] = info.config.model;
     assistant.providerBaseUrls[info.config.provider] = info.config.base_url;
     assistant.providerCredentials[info.config.provider] = info.config.credential_id || '';
+    if (!info.credential?.available) assistant.providerCredentials[info.config.provider] = '';
+    assistant.providerCredentialScopes[info.config.provider] = assistantModelScope(info.config);
+    assistant.providerBudgets[info.config.provider] = info.config.max_tokens;
     for (const [id, provider] of Object.entries(info.providers)) { const opt = document.createElement('option'); opt.value = id; opt.textContent = provider.label; $('#assistant-provider').append(opt); }
     for (const [selector, values] of [['#assistant-lyrics-mode', info.options.lyrics_modes], ['#assistant-abc-source', info.options.abc_sources]]) {
-      for (const value of values) { const opt = document.createElement('option'); opt.value = value; opt.textContent = value; $(selector).append(opt); }
+      for (const value of values) { const opt = document.createElement('option'); opt.value = value; opt.textContent = optionLabel(value); $(selector).append(opt); }
     }
     addAdvanced(info.defaults, info.options); putFields($('#assistant-form'), info.defaults);
     putFields($('#assistant-config-form'), info.config); $('#assistant-extra').value = JSON.stringify(info.config.extra_parameters || {});
     updateModelInfo(info); providerChanged();
+    assistant.baselines = Object.fromEntries(['create', 'plan', 'cover', 'assistant'].map(panel => [panel, cloneText(captureDraft(panel))]));
     for (const panel of ['create', 'plan', 'cover', 'assistant']) applyDraft(panel, drafts[panel]?.draft);
     const draftErrors = Object.entries(drafts).filter(([, draft]) => draft.error);
     if (draftErrors.length) assistantText('#assistant-draft-status', draftErrors.map(([panel, draft]) => `${panel}：${draft.error}`).join('；'));
@@ -410,7 +697,7 @@ async function initAssistant() {
         if (panel === 'cover' && event.target.id === 'cover-lyrics' && event.target.value.trim()) { $('#cover').dataset.instrumental = 'false'; updateInstrumental('cover'); }
         if (panel === 'assistant') {
           if (event.target.id.startsWith('assistant-result-')) assistant.resultEdited = true;
-          if (event.target.id === 'assistant-result-abc' && assistant.result) { assistant.result.abc_status = 'pending'; renderAbcState(); }
+          if (event.target.id === 'assistant-result-abc' && assistant.result) { assistant.result.abc_status = 'pending'; renderAbcState(); $('#assistant-compose-abc').classList.toggle('hidden', Boolean(event.target.value.trim()) || assistant.result.cot === 'off'); }
           if (['assistant-result-lyrics', 'assistant-result-style'].includes(event.target.id)) assistantText('#assistant-result-note', '文本已修改；已有谱面未随文本更新，发送前请确认词谱对应。');
           updateCostHint();
         }
@@ -418,38 +705,35 @@ async function initAssistant() {
       });
     }
     updateCostHint();
-    if (!assistant.job?.id) {
-      const recent = await api('/api/jobs?limit=100');
-      assistant.job = recent.jobs.find(job => job.kind === 'assistant' && !job.result?.connection && job.summary !== '测试 LLM 连接') || null;
-    }
-    if (assistant.job?.id) {
-      const current = await api(`/api/jobs/${assistant.job.id}`).catch(() => null);
-      if (current && !TERMINAL.has(current.status)) pollAssistant(current.id, assistant.ticks.assistant);
-      else if (current) {
-        assistant.job = current;
-        if (current.result && !current.result.connection) {
-          if (!assistant.resultEdited) { showAssistantResult(current.result); await savePanel('assistant'); }
-          else {
-            const notice = $('#assistant-progress'); notice.textContent = '该任务已结束。当前编辑已保留，可查看任务的最新结果。';
-            const button = document.createElement('button'); button.className = 'ghost'; button.textContent = '查看最新任务结果';
-            button.onclick = () => { if (confirm('替换当前编辑区？需要保留的内容请先下载。')) { showAssistantResult(current.result); changedDraft('assistant'); } }; notice.append(button);
-          }
-        }
-        if (current.error) { const error = document.createElement('p'); error.textContent = current.error; $('#assistant-progress').append(error); }
-      }
-    }
+    await restoreAssistantJobForCurrentScope();
   } catch (error) { assistantText('#assistant-progress', `助手初始化失败：${error.message}`); }
+  finally { setAssistantLoading(false); }
 }
-$('#assistant-config-form').onsubmit = event => { event.preventDefault(); saveAssistantConfig().catch(error => assistantText('#assistant-config-status', error.message)); };
+$('#assistant-config-form').onsubmit = event => { event.preventDefault(); refreshAssistantModels(); };
 $('#assistant-provider').onchange = providerChanged;
-$('#assistant-model').oninput = () => { assistant.providerSelections[$('#assistant-provider').value] = $('#assistant-model').value; };
+$('#assistant-model-choice').onchange = () => assistantModelChoiceChanged(true);
+$('#assistant-model').oninput = () => { $('#assistant-model-choice').value = CUSTOM_MODEL; assistant.providerSelections[$('#assistant-provider').value] = $('#assistant-model').value; renderAssistantChannelStatus(); };
+$('#assistant-key').oninput = renderAssistantChannelStatus;
+$('#assistant-base-url').oninput = () => {
+  assistant.modelRefreshRevision++;
+  renderAssistantModels();
+  assistantText('#assistant-model-list-status', 'API 地址已修改，请填写该地址对应的 API Key 并刷新模型；也可手动填写模型 ID。');
+  renderAssistantChannelStatus();
+};
+$('#assistant-open-settings').onclick = () => openAssistantSettings(true);
 $('#assistant-refresh-models').onclick = refreshAssistantModels;
 $('#assistant-delete-key').onclick = async () => { try { const provider = $('#assistant-provider').value, credential = assistant.providerCredentials[provider] || ''; await assistantPost('/api/assistant/credentials', {delete: true, credential_id: credential}); assistant.providerCredentials[provider] = ''; if (assistant.config?.provider === provider) assistant.config.credential_id = ''; await saveAssistantConfig(); } catch (error) { assistantText('#assistant-config-status', error.message); } };
 $('#assistant-form').onsubmit = event => { event.preventDefault(); startAssistant(); };
 $('#assistant-test').onclick = () => startAssistant(true);
 $('#assistant-retry').onclick = () => startAssistant(false, true);
+$('#assistant-compose-abc').onclick = () => {
+  $('#assistant-abc-source').value = ABC_COMPOSE;
+  $('#assistant-retry-stage').value = 'abc';
+  updateCostHint(); changedDraft('assistant');
+  startAssistant(false, true);
+};
 $('#assistant-save-draft').onclick = () => savePanel('assistant').then(() => assistantText('#assistant-draft-status', '草稿已保存')).catch(error => assistantText('#assistant-draft-status', error.message));
-$('#assistant-validate').onclick = async () => { const revision = assistant.ticks.assistant; try { await validateAssistantAbc(); if (assistant.ticks.assistant !== revision) throw new Error('校验期间内容有修改，请重新校验当前 ABC'); assistant.result.abc_status = 'validated'; renderAbcState(); changedDraft('assistant'); } catch (error) { assistantText('#assistant-abc-status', error.message); } };
+$('#assistant-validate').onclick = async () => { const revision = assistant.ticks.assistant; try { await validateAssistantAbc(); if (assistant.ticks.assistant !== revision) throw new Error('校验期间内容有修改，请重新校验当前 ABC'); assistant.result.abc_status = 'validated'; renderAbcState(); changedDraft('assistant'); } catch (error) { if (assistant.result) { assistant.result.abc_status = 'failed'; assistant.result.report ||= {}; assistant.result.report.abc ||= {}; assistant.result.report.abc.error = error.message; renderAbcState(); changedDraft('assistant'); } } };
 $$('[data-assistant-send]').forEach(button => button.onclick = () => prepareTransfer(button.dataset.assistantSend));
 $('#assistant-send-confirm').onclick = confirmTransfer;
 $('#assistant-dismiss').onclick = () => $('#assistant-transfer-notice').classList.add('hidden');
@@ -463,5 +747,5 @@ $('#assistant-undo').onclick = async () => { const undo = assistant.undo; if (!u
 $('#assistant-download').onclick = () => { const r = readAssistantResult(); if (!r) return; const request = {style: r.style, lyrics: r.lyrics, cot: r.cot, seed: assistantValues().yue2_seed}; if (r.abc && r.abc_status === 'validated') request.abc = r.abc;
   downloadText('YuE2-creation.txt', `曲风\n${r.style}\n\n歌词\n${r.lyrics}\n`); downloadText('YuE2-request.json', JSON.stringify(request, null, 2)); };
 $('#assistant-download-abc').onclick = () => { const r = readAssistantResult(); if (r?.abc) downloadText('score.abc', r.abc); };
-$('#assistant-copy').onclick = () => { const r = readAssistantResult(); if (r) navigator.clipboard.writeText(`曲风\n${r.style}\n\n歌词\n${r.lyrics}`).catch(error => assistantText('#assistant-result-note', error.message)); };
-initAssistant();
+$('#assistant-copy').onclick = () => { const r = readAssistantResult(); if (!r) return; const button=$('#assistant-copy'),idle=button.textContent; navigator.clipboard.writeText(`曲风\n${r.style}\n\n歌词\n${r.lyrics}`).then(()=>{assistantText('#assistant-result-note','已复制歌词与曲风。');button.textContent='已复制';setTimeout(()=>button.textContent=idle,1600);}).catch(error => assistantText('#assistant-result-note', `复制失败：${error.message}`)); };
+window.assistantReady = initAssistant();

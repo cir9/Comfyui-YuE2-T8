@@ -2,13 +2,27 @@
 
 [中文](#中文说明) · [English](#english) · [模型仓库 / Model weights](https://huggingface.co/t8star/YuE2-Comfy) · [ComfyUI Registry](https://registry.comfy.org/nodes/yue2-t8)
 
+本项目已收录于社区维护的双语项目清单 [awesome-YuE](https://github.com/RevolutionLA/awesome-YuE)，感谢其维护者整理 YuE / YuE2 生态资源。
+
 ![YuE2 Music T8](icon.svg)
 
 ## 完整版整合包
 
-完整版整合包：[夸克网盘下载](https://pan.quark.cn/s/67ebf18a2d51)
+完整版整合包：[夸克网盘下载](https://pan.quark.cn/s/264edb7e36bd) · [Hugging Face 下载 v1.5.4](https://huggingface.co/t8star/YuE2-Comfy/resolve/main/bundles/Yue2-T8-Onekey-v1.5.4-Windows-NVIDIA.rar?download=true) · [SHA-256](https://huggingface.co/t8star/YuE2-Comfy/resolve/main/bundles/Yue2-T8-Onekey-v1.5.4-Windows-NVIDIA.rar.sha256?download=true)
 
-Windows / NVIDIA 完整包，包含运行环境与模型。完整解压后，双击 `YuE2-T8.exe` 即可启动。
+Windows / NVIDIA 完整包，包含运行环境与模型。完整解压后，双击 `YuE2-T8.exe` 即可启动；首次启动可通过页面“检查更新”安装最新的小型代码补丁。
+
+建议解压到较短目录（例如 `E:\YuE2`）。v1.5.9 已缩短检查点临时路径，修复旧版嵌套翻唱任务在最终文件路径正常时仍超过 Windows 260 字符限制的问题；若安装目录本身过深，第三方组件的最终文件仍可能受到系统路径限制。
+
+如果 Windows 拦截 EXE，可双击 `启动本地整合包.bat`。下载后可在 PowerShell 校验完整包：
+
+```powershell
+Get-FileHash .\Yue2-T8-Onekey-v1.5.4-Windows-NVIDIA.rar -Algorithm SHA256
+```
+
+正确 SHA-256 为 `dec9319a2bed3a810e4f810524537e94920142d13d0c9b688353ddfa0e372d9b`。
+
+[GitHub Release](https://github.com/T8mars/Comfyui-YuE2-T8/releases) 仅提供代码与自动更新附件，不包含 Python 或模型。完整整合包从上方夸克网盘获取；模型和可选 GGUF 权重也可通过下方网盘单独下载。旧版升级涉及统一运行环境迁移时，更新器会按需另外下载依赖。
 
 ## 模型网盘
 
@@ -35,8 +49,227 @@ YuE2 Music T8 把 YuE2-3B 完整歌曲生成接入 ComfyUI，并提供一个可�
 - 使用 SheetSage2 + MERT 把 WAV、FLAC、MP3、M4A、OGG、AAC 转为 ABC/MIDI，并生成翻唱。
 - 独立“音频转谱”工作台默认完整识别旋律、和弦、节拍、调性与段落；钢琴卷帘叠加原曲波形，支持秒级同步、区间循环、合成试听和历史重开。
 - 输入 1–30 秒参考干声，把新生成歌曲的人声转换为参考音色，再与 Demucs 分离的伴奏混合为 48 kHz 双声道 FLAC。
-- 共享单 GPU 队列、任务中心、逐项取消、任务历史与导出；任务中心会区分当前任务和完整等待列表，并显示来源、阶段、风格摘要与排队顺序。
+- Seed-VC 与 RVC 翻唱区直接提供低八度、原调和高八度：女声原曲换男声音色通常先选 −12，男声原曲换女声音色通常先选 +12；也可输入 −12 到 +12 的整数半音。
+- 共享单 GPU 队列、任务中心、逐项取消、任务历史与导出；任务中心会区分当前任务，显示真实等待总数、最近 100 项的来源、阶段、风格摘要与实际排队顺序。
 - 自动清理过期或超出容量的任务、上传和日志；`exports` 中的重要成品永久保留，服务重启时会把中断任务明确标为失败。
+- MuLaCover 重新编曲可从完整歌曲自动提取旋律、和弦与鼓组，或直接读取 MIDI；支持新歌词、结构化曲风、移调、固定种子、试听、MIDI 导出，并把成品继续发送到 Seed-VC/RVC 音色转换。
+- 本地工作台新增 MIDI 编辑器：导入标准 MIDI Type 0/1，画音符、移动、改长度/力度、复制、撤销、和弦与移调，使用本机免费合成器试听，按项目自动保存。上传音乐可独立识别并导出旋律、和弦、鼓组 MIDI，不需要歌词、API Key 或完整 MuLaCover 生成权重。
+
+### v1.6.0：MIDI 编辑器与独立音乐转 MIDI
+
+左侧打开 **MIDI 编辑器**，可点击“打开练习示例”开始：点击空白画音符、拖动移动、拖右边改长度，选择后可改音高与力度，也可复制、撤销、添加和弦或升降八度。点击“试听”使用本机合成器，无需 API Key，也不占用 GPU；手机可触摸编辑，并切换“编辑与试听 / 生成歌曲”。
+
+**从歌曲提取：** 点击“上传音乐 · 提取 MIDI”或“从资产库选择”，试听原曲、确认整首或时间范围，再点击提取。旋律、和弦、鼓组三类结果均可分别试听、编辑、下载，还可下载合并多轨或 ZIP。只需要 `SymbolicTranscriptor/` 下的 YourMT3 与五个和弦 checkpoint，无需歌词、曲风、API Key 或 MuLaCover 生成权重。默认处理整首，超过 15 分钟会明确要求选区，不会按生成时长静默截到 30 秒。
+
+**从 MIDI 生成歌曲：** 确认轨道用途，填写歌词及至少一项曲风，再点击“生成带伴奏的完整歌曲”。默认 30 秒，需完整 MuLaCover、HeartCodec、Qwen Embedding 模型。提交会固定 MIDI 版本；运行期间继续编辑不会改变当前任务，刷新可恢复任务与成品，结果能保存到资产库并发送到 RVC/Seed-VC 换音色。
+
+编辑、歌词、曲风、来源和视图按项目自动保存；保存失败保留本机备份，连续刷新仍可恢复为副本。文档每页 20 份，“文档与缓存管理”支持归档/恢复及单独清理识别缓存。归档不会删除已保存素材；缓存清理保留编辑文档、原音频、生成快照、MIDI 和作品。资产库原有回收站与引用保护继续生效，已发布旧版本引用的来源也会保留。
+
+自动转谱可能有误差，默认旋律识别主唱；纯器乐可从真实候选乐器轨指定旋律，或手工修正。空轨明确标记，识别失败不会伪造空 MIDI；部分失败仍保存成功轨，ZIP 附状态说明，任务历史支持继续识别与打开结果。纠正识别 BPM 可利用原始时间事件，不重复运行模型。
+
+普通 MIDI 导出保留原 PPQ、速度变化、控制事件和编辑时序；生成副本另行对齐模型的十六分网格，最多 5000 格，原文件不变。BPM、力度、试听乐器及控制事件不保证精确控制生成音频，识别和弦也不等同原伴奏全部配器。编辑器导出的三份标准 MIDI 可用于现有原生 ComfyUI MuLaCover 条件节点；ABC/YuE2 转换属于后续阶段。
+
+### v1.6.9：ABC 报错定位与本地校验
+
+乐谱计划页新增“校验当前 ABC”。校验完全在本地执行，不调用付费 API；失败时会显示第几个 Vocal/Ins 双声部块、精确行号、期望的标记和实际行内容，并自动选中出错行。例如 `V:Ins` 会明确提示原生子集要求写成 `V: Ins`，冒号后保留一个空格。这里检查的是 YuE2 官方原生双声部子集，不代表对整个 ABC 标准作通用判断。
+
+### v1.6.8：MuLaCover 动态显存与显存清理
+
+任务中心新增“显存可用”状态和“清理显存（不删文件）”按钮。按钮只清理当前服务进程的 CUDA 分配并显示清理前后状态，不会删除任务、资产或正在运行的独立 worker；任务完成、失败或取消后 worker 也会自动释放模型。
+
+MuLaCover 重新编曲现在接收并保存显存预算与加载方式。自动模式会根据任务开始时的可用显存选择双批次或单批次；低显存保护使用单批次并将 CFG 降到 1.0，避免第二份条件张量把峰值推过显卡上限。KV 缓存按歌词提示长度和目标时长计算，不再每次固定申请完整 8192-token 缓存。任务结果和 `artifacts/mulacover/metadata.json` 会记录实际策略、缓存长度和观察到的显存，失败后可从任务中心按当前设置重新运行。
+
+### v1.5.12：十轮交叉检查、清理重试与生成条件修复
+
+- 助手提交任务期间立即锁定生成、测试和重试操作，快速双击不会重复创建付费任务；项目切换等待提交完成，草稿保存失败也会继续跟踪已创建任务。
+- 彻底删除严格限定为预览中允许删除的资产；受保护素材超过 500 项也不会挡住后面的可清理素材。文件或波形缓存被占用后可继续重试，Windows 部分清理保留任务记录和明确说明。
+- 切换项目和刷新模型列表时丢弃过期响应；训练添加歌曲直接打开正常资产库，屏幕尺寸改变后分页自动对齐。“用于歌曲创作”选中的风格模型也会保存到项目草稿。
+- 纯器乐勾选现在实际转换为无演唱的模型文本条件和 `[instrumental]` 歌词标记，忽略原歌词并移除常见肯定人声提示。模型仍可能生成类似人声的声音，该选项不能硬性保证无人声（Issue #12）。
+- 重新编曲新增默认“不主动指定曲风”模式，可不填主题、流派、乐器和情绪，也可切换指定曲风。参考提供旋律、和弦和鼓点；该模式不能保证完全复制原编曲或音色（Issue #13）。
+
+### v1.5.14：低显存模型分批加载
+
+歌曲创作、乐谱渲染和旋律重制的“高级设置”新增“模型加载方式”：默认“自动选择”，显卡或预算不超过 12 GiB 时将原始 BF16 权重留在 CPU 内存，按需载入显卡，避免把整个 AR 模型一次放入显卡导致加载失败。可手动选择“低显存 · CPU 分批加载”或“全部载入显卡”；跨页同步并保留选择，失败恢复和风格 LoRA 试听也使用当前设置。ComfyUI 的 YuE2 模型加载节点提供同名 `model_loading` 可选项，旧工作流默认自动选择。
+
+分批加载使用整合包已有的 Accelerate，不需要额外 Python 或模型；会显著减慢生成，建议至少 32 GB 内存。显存预算包含 2 GiB 预留，例如填 8 时进程上限约 6 GiB；调低预算本身不会缩小模型。已在 RTX 5090 Laptop 上限制进程分配为 6 / 4 GiB，验证原始模型生成、声学合成和音频解码，固定输入的短片段与常规模式输出一致。该验证不代表已完成 RTX 3060 Ti 等原生 8 GB 显卡的长歌验收，长曲仍受缓存、其他程序占用和硬件速度影响。这个选项不控制 RVC 训练或直接换声；MuLaCover 重新编曲有自己的同名显存预算和低显存保护选项。
+
+### v1.5.13：训练记录、检查点与快照清理
+
+“训练工作台”新增“清理训练记录与快照 → 管理 / 清理”，记录和快照每页 10 项，可跨页选择。确认前显示删除范围、预处理缓存和检查点空间，以及共享快照、运行任务和草稿的保留原因。暂停训练需明确放弃继续训练；文件占用时留下可重试记录，防止从残缺缓存继续训练。清理保留原始音频、资产库已保存模型、歌曲结果及导出文件，删除没有其他关联训练的快照后，可继续清理之前被快照保护的素材。
+
+### v1.5.11：资产回收站与任务批量清理
+
+- 资产库顶部支持跨页勾选、移入回收站和恢复；回收站提供彻底删除所选、清空回收站，先预览数量、引用和可释放空间。
+- 项目引用默认保留，确需删除时可明确选择同时从项目移出。训练快照、训练模型、运行任务及草稿使用的素材保持保护，共享文件只在最后一个资产删除后释放。
+- “任务与版本”支持逐项或批量清理，以及按当前筛选清理失败/取消任务；确认前显示范围和空间，运行、排队、暂停及仍被使用的任务会保留。
+- 任务清理保留资产库、模型、训练数据和已导出文件；资产移入回收站可恢复，彻底删除才释放空间。文件被占用时支持重试，删除最后一页内容后自动回到有效页。
+
+### 本地整合包 API
+
+启动整合包后，网页和 API 共用地址，默认是 `http://127.0.0.1:8189`；启动器设置其他端口时请使用网页地址栏中的端口。`GET /api/health` 检查服务与模型状态，`POST /api/jobs` 提交任务，`GET /api/jobs/{任务ID}` 查询进度与结果，`POST /api/jobs/{任务ID}/cancel` 取消任务。无需另外安装 ComfyUI 就能使用这些本地接口。
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8189/api/health
+Invoke-RestMethod http://127.0.0.1:8189/api/jobs -Method Post -ContentType 'application/json' -Body '{"kind":"generate","request":{"style":"acoustic folk, piano","lyrics":"[Verse]\nHello again","cot":"off","seed":831001}}'
+```
+
+提交返回任务 ID，生成在后台排队执行。Python 调用示例见仓库的 `client.py`。
+
+### v1.5.10：AI 助手模型列表刷新修复
+
+- “保存设置 / 刷新模型”现在会保存地址与凭据，然后实际请求该渠道的模型 LIST；兼容接口未选择模型时会自动选择并保存列表首项。
+- 模型列表可在刷新页面后恢复；手动填写的模型不会被刷新覆盖。列表与凭据按 API 地址隔离，切换地址后旧请求的结果不会覆盖当前列表。
+- 接口不支持 `/models`、鉴权失败或列表为空时显示具体原因，保留设置和自定义模型入口；没有模型 ID 时不会开始付费创作或连接测试。
+- 用真实浏览器与本地 HTTP 兼容接口验证保存、列表读取、刷新恢复、手动模型、404 回退和延迟响应；仅刷新列表不会发送聊天请求。
+
+### v1.5.9：Windows 检查点临时路径修复
+
+- 阶段临时目录由 `semantic.tmp-完整UUID` 改为短随机目录，JSON 临时文件也不再叠加目标名称、进程号和完整 UUID。
+- 临时目录仍与最终检查点位于同一位置，写完全部文件后再整体提交；取消或失败不会暴露半成品，旧检查点与恢复格式保持兼容。
+- 对用户反馈的 262 字符报错路径和接近上限的安装目录加入回归验证，不需要修改注册表才能解决这条报错。
+- 修复 Issue #9：补齐被忽略规则误排除的 MuLaCover codec 与 torchtune Python 源码；缺源码时不再显示就绪，发布包也会强制检查必需文件。
+
+### v1.5.8：十轮交叉审计与发布链修复
+
+- 修复同一素材以多个角色加入项目后分页重复、遗漏歌曲的问题；音高输入为空、布尔参数类型错误和非法 JSON 会在排队前给出明确中文提示。
+- 无效 ABC 仍完整保留并可发送，手动校验失败不会覆盖恢复说明；助手设置加载、项目切换与刷新恢复不再互相覆盖。
+- 手机资产库每页 8 项并在列表顶部提供分页；重复按钮带上作品名称，首次 Tab 可进入“跳到主要内容”，训练资源检查失败也有明确重试入口。
+- Windows 启动成功后会立即释放启动器文件，页面自动更新不再被 EXE 自锁；Comfy Registry 只从通过完整 CI 的版本标签发布，避免节点包和正式标签内容不一致。
+
+### v1.5.7：交互收尾与任务恢复
+
+- 项目改名、归档、更新、清理和音色管理统一使用工作台内弹窗，不再出现打断操作的浏览器原生提示框。
+- AI 助手会在服务端先排除连接测试再查找当前项目的最新真实创作，连续测试模型也不会遮住歌词、曲风和 ABC 结果。
+- Windows 启动器、更新器、Python、网页和浏览器回归均纳入同一条全绿发布检查。
+
+### v1.5.6：十轮交叉检查与大数据量稳定性
+
+- 修复任务刚完成时点击取消可能覆盖成品的并发竞态；完成状态和已提交结果不会再被旧状态回写。
+- 任务中心可恢复最近 100 条之外的当前任务，并显示真实排队总数；AI 助手按当前项目恢复任务，未配置 API Key 或 GGUF 时直接禁用付费操作并给出入口。
+- 训练记录、模型与训练素材不再受 200/500 条静默截断；项目音乐版本每页 8 项、项目素材每页 10 项，训练模型继续每页 3 项。
+- 新增键盘“跳到主要内容”、更清楚的手机菜单与精确乐谱说明；启动器现在写入真实版本信息并由 Windows CI 验证。
+
+### v1.5.5：长 ABC 输出预算
+
+- AI 创作助手的新安装默认输出预算从 4K 提高到 32K；云 API 与兼容接口最高可填 262,144 Token，包含用户提出的 220K。
+- 云端与本地 GGUF 分别记忆输出预算；切换到本地模型时默认回到 4K，避免超过本地上下文。最终输出能力和费用仍由所选模型与渠道决定。
+
+### v1.5.4：后台进度与完整包交付收口
+
+- RVC 素材切片、F0、HuBERT 特征和训练轮次都会向后台任务写入数字进度，切换页面后也能查看。
+- 完整包构建会验证并带上 MuLaCover 全部四组模型、示例 RVC/YuE2 模型和原生 ComfyUI MuLaCover 节点包。
+
+### v1.5.3：工作台与 ComfyUI 训练链路打通
+
+- 从资产库或任务结果发送大音频时，浏览器只传递受校验的本地引用；服务端通过硬链接或本地复制交给任务，避免整首歌在浏览器内存中下载后再上传。
+- “YuE2 生成歌曲”可选择已训练的歌曲风格 LoRA、设置 0–2 强度，也可直接连接“YuE2 训练歌曲风格”的输出；风格 LoRA 当前只用于已验证的直接生成模式。
+- 新增 RVC 音色加载、训练和翻唱节点。训练项目、素材试听、说话人和训练参数先在本地工作台准备，节点会执行预检并把训练出的音色直接交给 RVC 翻唱。
+
+### v1.5.2：训练、恢复与更新稳定性复查
+
+- YuE2 训练只接受至少 5 秒的完整歌曲或作品，训练集和验证集使用服务端记录的歌曲来源，避免同一首歌的不同片段被误当作两首歌。
+- RVC 素材必须明确标记为纯人声；含伴奏或尚未确认的素材会先引导分离，防止误训练产生啸叫和持续杂音。
+- 项目草稿覆盖 AI 创作、YuE2 训练和 MuLaCover；页面切换后恢复各项目内容，归档项目也可直接恢复。
+- 当前结果按项目和面板从完整任务库恢复，任务列表使用轻量状态，不再因历史阶段数组变大而拖慢页面。
+- 训练素材可直接试听，完成模型显示步数、时间与来源；MIDI 和 ABC 任务结果自动进入资产库。
+- 修复异常退出后更新器长期锁死的问题；统一安装流程会准备 RVC 与 MuLaCover 模型，代码更新仍不包含 Python、模型或用户数据。
+- 手机端调整训练表单顺序并增加四步新手引导；桌面、平板和手机浏览器回归覆盖项目隔离、归档恢复与训练草稿。
+
+### v1.5.0：MuLaCover 原生重新编曲
+
+- 独立工作台新增“重新编曲”：参考歌曲或 MIDI、歌词和曲风都保存在当前项目草稿中，页面切换或刷新后可恢复。
+- 任务按“提取旋律 → 编码曲风 → 生成 → 解码”显示真实后台阶段，可取消、重试、在当前页试听并导出旋律/和弦/鼓组 MIDI。
+- MuLaCover、HeartCodec、Qwen3 Embedding 与转谱组件使用同一个 Python 3.12 运行时，按需顺序载入并在任务结束后释放显存。
+- 独立的原生 ComfyUI 节点仓库为 [Comfyui-Mulacover-T8](https://github.com/T8mars/Comfyui-Mulacover-T8)，不依赖本工作台 HTTP 服务；两者可共用同一份模型目录。
+
+### v1.4.9：翻唱音域快捷控制
+
+- Seed-VC 的演唱音高从高级设置移到翻唱主流程，与 RVC 一样直接显示低八度、原调和高八度快捷按钮。
+- “女歌男唱 · 低八度”对应 −12 半音，“男歌女唱 · 高八度”对应 +12 半音；选择会在当前浏览器分别记住。
+- 八度调整只改变分离后的人声演唱音高，伴奏保持不变；非整八度可能与原伴奏不和谐，页面会明确提醒。
+
+### v1.4.8：界面对比度与完整复查
+
+- 加深章节编号、主操作按钮、流程完成状态和历史完成状态的颜色，小字号文字达到 WCAG AA 对比度要求。
+- 运行或排队任务会显示常驻的后台进度卡；展示后端上报的百分比、数量或当前阶段，点击即可回到完整任务详情。
+- 再次覆盖首次启动、新建项目、全部 9 个工作区、键盘弹窗、资产加入项目后的刷新状态，以及桌面、平板和手机布局。
+- GitHub 自动更新包仍只包含代码，不包含 Python、模型、GGUF、本地资产或用户数据。
+
+### v1.4.7：播放器与错误提示无障碍收尾
+
+- 当前结果、历史、多候选、分轨、RVC、训练短试听和全局播放器都有清楚且可区分的读屏名称。
+- 文本资产查看框补齐名称，工作区按钮使用正确的当前页面语义。
+- 多候选任务部分成功时不再直接显示原始技术异常；完整详情仍保留在任务日志。
+- 浏览器回归会直接检查音频播放器、动态弹窗内部控件、导航语义和部分结果错误摘要。
+
+### v1.4.6：资产加入项目状态修复
+
+- 资产当前版本已经加入所选项目时，按钮会稳定显示“已在项目”，不会再出现重复点击后看似无响应的情况。
+- 资产建立新版本后仍可再次加入项目，项目继续固定到用户明确加入的具体版本。
+- 浏览器回归同时覆盖已加入和未加入的资产卡；GitHub 自动更新包仍只包含代码。
+
+### v1.4.5：资产操作、页面切换与失败提示收尾
+
+- 资产卡的试听、发送、编辑和加入项目操作会自动换行，常见桌面宽度不再出现横向滚动或按钮被裁掉。
+- 手机和平板从长页面切换工作区时回到新页面顶部；不相关页面不会短暂残留上一个页面的结果卡。
+- 资产弹窗补齐读屏名称，普通必填项统一显示中文提示；当前创作页与历史页使用一致的友好错误摘要，完整技术信息仍可从任务日志查看。
+- 浏览器回归现在会装入固定项目、四项素材和一条已完成音频，实际检查资产卡边界、三个动态弹窗、跨页滚动和当前页播放器。
+- 旧版本遗留的“更新完成”记录不会再与当前版本状态冲突。GitHub 自动更新包仍只包含代码。
+
+### v1.4.4：移动端全部功能菜单与浏览器回归
+
+- 手机和平板顶部新增始终可见的“全部”入口，打开后可直接选择全部 9 个工作区，并标出当前页面；不再依赖用户发现横向滑动。
+- GitHub Quality 新增真实 Chromium 回归，在桌面、平板、手机三档检查导航、项目焦点、空筛选恢复、按钮状态、控件名称、重复 ID、页面溢出和控制台错误。
+- 每次质量检查都会保存桌面、平板、手机和手机菜单截图，以及浏览器与服务报告，便于发现后续样式回归。
+- 更新同步会排除 `.git`、虚拟环境、测试缓存和 `node_modules` 等开发目录，并重试 Windows 短暂文件锁；正式自动更新包仍只包含版本化代码。
+
+### v1.4.3：工作台导航与新手交互修复
+
+- 桌面端只保留左侧工作台导航；手机和平板压缩页头和自检区，让当前功能更早进入首屏。
+- 1024 px 及以下持续显示当前项目，并可一键返回项目选择，减少把生成结果放错项目的风险。
+- 存储清理前明确说明范围并要求确认；没有正在执行的任务时禁用取消按钮；历史技术错误先显示易懂摘要，详情和日志仍可展开。
+- 资产与任务筛选无结果时可一键清除筛选，并补齐搜索、乐谱编辑和上传控件的辅助名称与文字对比度。
+
+### v1.4.2：项目竞态与窄窗口交互修复
+
+- 上传、生成、转谱、翻唱、训练和助手任务始终归属发起时的项目；操作途中切换项目，不会再把结果、草稿或错误串到新项目。
+- YuE2 训练、检查点试听与辅助任务分别显示；试听不会覆盖安全暂停/继续状态，发送到创作时使用用户明确选择的检查点模型。
+- 资产库里的 ABC 乐谱可直接发送到可编辑的乐谱计划，试听结果保留在原项目；项目、资产和历史的慢请求不会覆盖较新的选择。
+- 1024 px 及以下改为可横向浏览的顶部工作区导航，并自动把当前功能滚入视野；模型设置在切换页面后收起，表单和结果区不再被侧栏挤压。
+- 发布包仍只有代码和自动更新清单，不包含 Python、音乐模型、GGUF、本地作品、用户数据或私有路线图。
+
+### v1.4.1：工作台闭环与训练数据修复
+
+- 项目、资产、创作和训练现在真正连通：资产可直接发送到原曲、参考音色、RVC、歌词、曲风与乐谱输入；文本可修订，资产和任务均可分页筛选。
+- 项目草稿按项目隔离；切换、归档、刷新和读取失败不会串入其他项目。项目可重命名、归档、移出素材、选择主版本，并把音频与校验清单导出到 `exports`。
+- YuE2 训练逐首绑定歌词、曲风或明确的纯器乐标记；后端禁止相同音频跨训练/验证集。暂停后可选择任意完整检查点试听，试听前核验训练身份、步数和全部文件哈希。
+- 模型设置在所有页面可达；移动端只保留一套工作台导航并改善触控尺寸。历史任务支持状态、类型、项目和文字筛选。
+- GitHub Release 仍只有代码自动更新包，不包含 Python、模型、GGUF 或用户数据；Windows / NVIDIA 完整包继续从页面顶部的夸克地址下载。
+
+### v1.4.0：音乐工作台、资产库与 YuE2 风格训练
+
+- 独立 WebUI 改为统一音乐工作台：项目、资产库、创作、乐谱、参考音色、AI 助手、训练和历史共用一套导航与当前项目。
+- 资产库统一管理歌曲、作品、人声、伴奏、参考音色、歌词、曲风、乐谱和模型。音频导入后可立即播放、查看波形并固定版本加入项目；任务结果也会自动归档。
+- “训练工作台”使用至少两首不同歌曲建立不可变训练/验证快照，要求确认素材使用权，使用 MERT 特征训练 YuE2 AR LoRA，并显示进度、训练/验证 loss、暂停与继续。
+- 风格模型自动关联固定提交的 Mothersuperior v4 NAR 配套资源。完成后可在当前页面生成约 10 秒试听，再发送到歌曲创作；首期只开放已通过实机验证的“直接生成”模式。
+- RVC 继续用于专用演唱音色训练，YuE2 LoRA 用于歌曲风格，两者在工作台内分工明确。所有功能继续共用一个 `runtime/python.exe`。
+
+### v1.3.1：显存控制、恢复和发布门禁
+
+- ComfyUI 与独立 WebUI 使用一致的可编辑显存预算，不再把节点输入限制在 12–24 GiB。
+- 失败任务恢复时采用页面当前显存预算；VAE 分块同时服从物理显存和用户预算。
+- ROCm/HIP 使用兼容的解码与 Seed-VC 路径，并禁止会产生错误结果的实验性 FP8；正式 ROCm 完整运行时仍需对应 AMD 设备验收。
+- 自动更新前明确提示代码备份位置；GitHub PR 运行完整测试，Registry 未接受版本时发布任务会失败并显示真实状态。
+
+### v1.3.0：统一运行环境与 RVC 训练工作台
+
+- 所有本地功能共用 Python 3.12.10 / Torch 2.10.0 + CUDA 12.8，逐阶段子进程运行。
+- “我的音色 / 训练”：导入素材、试听筛选、分离伴奏、训练、取消/续训、建索引、音色库预览与导入导出。没有 RVC 模型的用户可直接在页面训练。
+- 翻唱页可直接转换已有歌曲，也可先由 YuE2 重制再转换；选择 Seed-VC、RVC 或同曲对比。对比共用分轨缓存，完成后当前页和历史页都保留可试听结果。
+- RVC 显示所选音色的训练音域统计，并提供独立半音与八度选择、关闭检索对照。默认保留原调；低八度会改变演唱音高，对比模式下不影响 Seed-VC 的音高设置。
+- 训练项目/缓存、素材和用户音色库可指定目录并校验迁移；原数据保留备份。更新器支持旧多环境迁移和失败回滚。
+
+RVC 的训练和换声已做实际验证；少数样本不能证明所有音色效果，不能承诺 RVC 一定优于 Seed-VC。公开素材的对比指标和人工盲听状态见发布附件 [RVC_EVALUATION.md](https://github.com/T8mars/Comfyui-YuE2-T8/releases/download/v1.3.0/RVC_EVALUATION.md)。完整包附带已编译并验证的可选 FlashAttention 轮子；当前歌曲推理未接入独立 `flash_attn`，无需安装，也不宣称整曲提速。
 
 ### 完整转谱与钢琴卷帘
 
@@ -50,11 +283,17 @@ YuE2 Music T8 把 YuE2-3B 完整歌曲生成接入 ComfyUI，并提供一个可�
 
 “AI 创作助手”通过贞贞平价小屋、贞贞的 AI 工坊、OpenAI 兼容接口或本地 GGUF 生成歌词、曲风和可选 ABC。结果可编辑、保存和下载，再选择字段发送到“创作”“乐谱计划”或“旋律重制 / 参考音色”。发送只填入草稿，生成音频由目标页按钮启动；该功能不增加 ComfyUI 节点。
 
-默认先生成歌词和曲风，ABC 交给 YuE2 规划；需要 LLM 作谱时再选自动创作 ABC。未通过校验的谱面不能直接发送，失败保留已完成文本，支持只重试失败步骤。草稿保存在 `userdata/assistant`，升级时需要保留该目录。
+新任务默认由当前 LLM 同时生成歌词、曲风和 ABC；谱面未通过校验时，歌词、曲风和模型最后返回的 ABC 草稿都会保留，失败原因显示在 ABC 输入框上方，仍可下载、编辑、直接“重新生成 ABC”，或完整原样发送到“乐谱计划”的 ABC 提示词框。目标框会标明该谱尚未校验，点击生成时才再次拦截格式错误；下载的可执行请求 JSON 不会把它误标成有效谱面。已有的下游规划结果会显示“补写 ABC”，无需重新生成歌词和曲风。仍可手动选择把 ABC 留给 YuE2 下游规划。草稿保存在 `userdata/assistant`，升级时需要保留该目录。
 
-API 密钥默认仅在本次服务会话有效，也可选择使用 Windows 当前用户加密保存。本地模型放在模型根目录的 `LLM` 下，或指定其他目录；运行 `安装本地LLM.bat` 安装独立 Python/CUDA 环境，选择已有 GGUF 后测试连接。安装器不下载 GGUF，不修改现有音乐运行时。模型加载成功不代表其乐谱生成质量通过验证。使用步骤见 [用户指南](USER_GUIDE.md#ai-创作助手)。
+API 密钥默认仅在本次服务会话有效，也可选择使用 Windows 当前用户加密保存。本地模型放在模型根目录的 `LLM` 下，或指定其他目录。v1.3.x 的音乐生成、转谱、Seed-VC、RVC 训练/推理和 GGUF 助手全部使用同一个 `runtime/python.exe`（Python 3.12.10），按任务启动子进程释放模型；没有第二套 Python。完整包已包含 GGUF 后端，`安装本地LLM.bat` 仅用于修复这一共享环境中的组件，不下载 GGUF 权重。模型加载成功不代表其乐谱生成质量通过验证。使用步骤见 [用户指南](USER_GUIDE.md#ai-创作助手)。
 
-渠道会自动填入参考节点使用的默认模型：贞贞平价小屋为 `bytedance/doubao-seed-evolving`，贞贞的 AI 工坊为 `gemini-3.5-flash`。模型框支持预置下拉、手动模型 ID，以及从标准 OpenAI `/models` 接口获取账号可用的模型 LIST；接口不支持 LIST 时仍可手填。API Key 获取：[贞贞平价小屋](https://api.seedance.nz/sign-up?aff=5f4w) · [贞贞的 AI 工坊](https://ai.t8star.org/register?aff=dP7j)。
+渠道会自动填入默认模型：贞贞平价小屋为 `bytedance/doubao-seed-2.1-turbo`，贞贞的 AI 工坊为 `gemini-3.5-flash`。兼容接口填写地址和 API Key 后，点击“保存设置 / 刷新模型”会从标准 OpenAI `/models` 接口获取账号可用的模型 LIST，结果显示在“模型选择”中；也可点“获取模型列表”再次读取。接口不提供列表时，选择始终保留的“自定义输入模型”并填写完整模型 ID，再保存即可。“测试模型连接”测试当前选定模型的聊天请求，可能产生费用，不用于发现模型列表。API Key 获取：[贞贞平价小屋](https://api.seedance.nz/sign-up?aff=5f4w) · [贞贞的 AI 工坊](https://ai.t8star.org/register?aff=dP7j)。
+
+页面顶部会直接显示当前渠道是否可用。若 API Key 未配置或会话密钥已随服务重启失效，“AI 渠道与 API Key”会自动展开；也可以从顶部状态条或失败结果中的“设置 API Key”直接定位输入框。
+
+YuE2 歌曲风格训练按当前歌曲项目读取素材。训练页的“添加歌曲”会打开带操作提示的资产库；把至少两首歌曲加入当前项目后，返回训练页即可分别指定训练集和验证集。空状态也提供资产库入口和直接导入按钮。
+
+每首含人声训练歌曲都可以直接在歌曲卡片内粘贴本曲歌词，也可以选择当前项目中的歌词资产；每首歌的曲风也可手动填写、选择曲风资产或使用右侧公共曲风。按钮旁会显示缺少曲风、歌词、验证集或授权确认等具体原因，以及后台预处理进度。训练方案默认使用“快速试训 · 200 步”，选择其他方案时高级参数会同步变化。训练完成后，训练记录下方会持续显示模型步数、实际采用的最佳检查点、loss、rank、大小和本机位置，并提供下载、打开文件夹和发送到歌曲创作。
 
 ### 安装
 
@@ -71,13 +310,13 @@ cd ComfyUI/custom_nodes
 git clone https://github.com/T8mars/Comfyui-YuE2-T8.git
 ```
 
-安装节点后，进入节点目录并运行一次 `install_runtime.bat`。脚本会下载模型、Python 3.12 核心运行时、两个 Python 3.11 转谱/参考音色运行时、CUDA 12.8 Torch、FFmpeg 和离线乐谱渲染组件。完成后重启 ComfyUI。
+安装节点后，进入节点目录并运行一次 `install_runtime.bat`。脚本会下载模型、统一 Python 3.12.10 运行时与 RVC 底模、CUDA 12.8 Torch、FFmpeg 和离线乐谱渲染组件。完成后重启 ComfyUI。
 
-要求：Windows 10/11、NVIDIA GPU、建议 24GB 显存、约 45GB 可用磁盘空间。正常生成、转谱和参考音色转换均使用离线模式。
+要求：Windows 10/11、NVIDIA GPU、建议 24GB 显存、建议至少 60GB 可用磁盘空间用于安装、下载与迁移（训练素材、检查点和作品另计）。正常生成、转谱和参考音色转换均使用离线模式。
 
 ### 模型放置路径
 
-模型统一发布在 [t8star/YuE2-Comfy](https://huggingface.co/t8star/YuE2-Comfy)。安装脚本固定使用已验证的模型提交 [`a083f1064`](https://huggingface.co/t8star/YuE2-Comfy/commit/a083f106499daead99259dd0c443a5494254cfc5)。默认放到当前节点目录的 `models` 下；也可以在 WebUI 顶部展开“模型位置与安装说明”填写其他硬盘的绝对路径，或者双击 `configure_models.bat` 后再安装。当前路径保存在 `settings.json`。
+模型统一发布在 [t8star/YuE2-Comfy](https://huggingface.co/t8star/YuE2-Comfy)。安装脚本固定使用已验证的提交 [`94f6d64c`](https://huggingface.co/t8star/YuE2-Comfy/commit/94f6d64c1b53a1700e8f76c0c4faff8500be7780)，其中补齐了 YuE2 风格训练所需的 `regularizer-safe-v1` 缓存和可移植的 MuLaCover 清单。默认放到当前节点目录的 `models` 下；也可以在 WebUI 顶部展开“模型位置与安装说明”填写其他硬盘的绝对路径，或者双击 `configure_models.bat` 后再安装。当前路径保存在 `settings.json`。
 
 ```text
 ComfyUI/custom_nodes/yue2-t8/models/YuE2-3B/model.safetensors
@@ -87,30 +326,47 @@ ComfyUI/custom_nodes/yue2-t8/models/MERT-v2-FullSong/model.safetensors
 ComfyUI/custom_nodes/yue2-t8/models/SheetSage2/render_assets/
 ComfyUI/custom_nodes/yue2-t8/models/Seed-VC/DiT_seed_v2_uvit_whisper_base_f0_44k_bigvgan_pruned_ft_ema_v2.pth
 ComfyUI/custom_nodes/yue2-t8/models/Demucs/955717e8.safetensors
+ComfyUI/custom_nodes/yue2-t8/models/RVC/
+ComfyUI/custom_nodes/yue2-t8/models/YuE2-training/
+ComfyUI/custom_nodes/yue2-t8/models/MuLaCover/
+ComfyUI/custom_nodes/yue2-t8/models/HeartCodec-oss/
+ComfyUI/custom_nodes/yue2-t8/models/Qwen3-Embedding-0.6B/
+ComfyUI/custom_nodes/yue2-t8/models/SymbolicTranscriptor/
+ComfyUI/custom_nodes/yue2-t8/models/YuE2-training/regularizer-safe-v1/codec.npy
+ComfyUI/custom_nodes/yue2-t8/models/YuE2-training/regularizer-safe-v1/offsets.npy
+ComfyUI/custom_nodes/yue2-t8/models/YuE2-training/regularizer-safe-v1/metadata.json
+ComfyUI/custom_nodes/yue2-t8/models/MODEL_MANIFEST.json
 ComfyUI/custom_nodes/yue2-t8/models/VOICE_MODEL_MANIFEST.json
+ComfyUI/custom_nodes/yue2-t8/models/MULACOVER_MODEL_MANIFEST.json
 ```
 
-手动 Git clone 时，把上面的 `yue2-t8` 换成实际仓库目录名 `Comfyui-YuE2-T8`。不要把权重直接放入 ComfyUI 的 `checkpoints` 目录；代码需要保留六个模型子目录、配置文件及两个清单。
+手动 Git clone 时，把上面的 `yue2-t8` 换成实际仓库目录名 `Comfyui-YuE2-T8`。不要把权重直接放入 ComfyUI 的 `checkpoints` 目录；代码需要保留十二个模型子目录、三个根清单以及各目录配置和清单。`YuE2-training` 约 500 MB，其中 `regularizer-safe-v1` 是训练预处理使用的固定缓存；MuLaCover 相关四个目录可运行 `scripts/download_mulacover_models.py --root <整合包目录>` 下载并按固定版本校验。原生 [Comfyui-Mulacover-T8](https://github.com/T8mars/Comfyui-Mulacover-T8) 的模型加载器也可直接填写这里的 `models` 绝对路径，避免重复保存大模型。
 
-如果使用自定义目录，该目录本身就是上面路径中的 `models`：六个子目录和 `MODEL_MANIFEST.json`、`VOICE_MODEL_MANIFEST.json` 必须直接位于其中。命令行安装也可使用：
+如果使用自定义目录，该目录本身就是上面路径中的 `models`：十二个子目录和相应清单必须直接位于其中。命令行安装也可使用：
 
 ```powershell
 .\install_runtime.bat -ModelsDirectory "D:\AI\YuE2-models"
 ```
 
+### 社区训练示例
+
+[CSD Korean Female v1](https://huggingface.co/t8star/YuE2-Comfy/tree/main/Community-Models/CSD-Korean-Female-v1) 提供一个可导入的 RVC 歌声音色包、一个 YuE2 AR 风格 LoRA、固定 NAR 配套文件和三段试听。RVC 使用 46 段共 68.5 分钟录音训练 100 轮；YuE2 LoRA 完成 800 步，并按歌曲隔离验证集后选用第 200 步的最低验证损失检查点。新版完整整合包已预装这两个训练示例。
+
+素材来自 CSD v1.1 中一位未署名的韩国职业女歌手，不是高允贞。CSD 衍生模型和试听按 CC BY-NC-SA 4.0 提供，仅限非商业用途；固定 NAR 配套文件保持 Mothersuperior 的 CC BY-NC 4.0，RVC 包同时保留上游使用协议。请以模型目录内的逐文件清单、署名和许可文件为准。
+
 ### 更新
 
-从 v1.2.2 开始，本地 WebUI 首页右上方的运行状态卡提供“检查更新”按钮，页面打开时也会自动检查稳定版。发现新版后点击“更新到 vX”，程序会从 [最新版本清单](https://github.com/T8mars/Comfyui-YuE2-T8/releases/latest/download/update-manifest.json) 下载代码包、验证来源与 SHA256、备份旧代码、安装并重启当前端口。更新保留 `models`、`runtime`、本地 LLM、作品、上传、导出、日志、缓存、助手草稿和设置；新版启动失败时自动恢复旧代码。运行或排队任务存在时不会开始更新。
+从 v1.2.2 开始，本地 WebUI 首页右上方的运行状态卡提供“检查更新”按钮，页面打开时也会自动检查稳定版。发现新版后点击“更新到 vX”，程序会从 [最新版本清单](https://github.com/T8mars/Comfyui-YuE2-T8/releases/latest/download/update-manifest.json) 下载代码包、验证来源与 SHA256、备份旧代码、安装并重启当前端口。更新保留模型、本地 GGUF、作品、上传、导出、日志、缓存、助手草稿和设置。首次升级到 v1.3.0 会准备并校验统一运行时，补齐 RVC 底模，旧服务退出后再切换代码与 Python；新版服务通过启动检查才清理旧运行时。失败时恢复旧代码与原运行时。运行或排队任务存在时不会开始更新。
 
-GitHub Release 只包含代码，不包含模型、Python 运行时或用户作品。v1.2.0 / v1.2.1 整合包尚无页面更新器，需要先手动安装一次 v1.2.2 代码包；从 v1.2.2 起即可直接在页面完成后续更新。
+GitHub 的 `*-code.zip` 是自动更新用代码包，不含模型和 Python；完整版包含统一运行时与基础模型，GGUF 权重另选。v1.2.2 起可用页面更新器。更早版本建议把新版完整版解压到新目录，设置已有模型路径后启动，保留原安装目录和作品。
 
-手动更新前请先结束任务、运行 `stop_service.bat` 并退出 ComfyUI，将 ZIP 顶目录内的代码覆盖到原安装目录，随后重新启动。已有模型无需重新下载；原来关闭 `offload_ar` 的工作流请手动启用它，随包示例已默认启用。
+不要只把 v1.3.0 代码覆盖到旧版多 Python 整合包：新版需要统一环境迁移。请使用页面更新器，或在新目录安装完整版。首次升级需联网下载缺失组件并留出新旧环境并存的临时空间；已通过校验的模型会复用。
 
 1.1.5 修复 Windows 长曲声学合成的显存峰值，默认按查询分块并卸载闲置 AR 权重；参考音色翻唱改为后台持久任务，支持阶段保存和恢复。完成后当前页面直接显示播放器、时长及下载按钮，刷新或切换页面后仍保留最近作品。详见 [验证记录](VALIDATION.md)。
 
 ### 使用
 
-节点位于 `YuE2 音乐` 分类。`workflows` 目录提供歌词创作、先计划再渲染、外部 ABC 重生成和参考音色翻唱四个前端工作流。Windows 整合包可双击 `YuE2-T8.exe` 启动；节点源码包可双击 `start_webui.bat`。启动窗口会保留并显示服务地址或失败原因。若 8189 已由另一套空闲 YuE2 占用，启动器会校验进程后自动切换；有运行或排队任务时不会中断。`stop_service.bat` 用于手动停止后台服务。
+节点位于 `YuE2 音乐` 分类。`workflows` 目录提供歌词创作、先计划再渲染、外部 ABC 重生成、参考音色翻唱、YuE2 歌曲风格训练和 RVC 训练翻唱六类工作流。Windows 整合包可双击 `YuE2-T8.exe` 启动；节点源码包可双击 `start_webui.bat`。启动窗口会保留并显示服务地址或失败原因。若 8189 已由另一套空闲 YuE2 占用，启动器会校验进程后自动切换；有运行或排队任务时不会中断。`stop_service.bat` 用于手动停止后台服务。
 
 参考音色翻唱需要 1–30 秒清晰单人干声，推荐 5–25 秒、无伴奏、少混响。工作流先生成或接收歌曲，再分离歌声/伴奏、转换音色并重新混音。请只使用本人声音或已经取得明确授权的声音。
 
@@ -129,6 +385,10 @@ GitHub Release 只包含代码，不包含模型、Python 运行时或用户作�
 | YuE2 音频转谱 | 音频到 ABC、MIDI、事件与乐谱图 |
 | YuE2 生成翻唱 | 使用核对后的 ABC 与新风格生成 |
 | YuE2 参考音色翻唱 | 使用 Seed-VC + Demucs 转换人声音色并重新混音 |
+| YuE2 加载 RVC 音色 | 从本地音色库选择已训练或导入的 RVC 音色与说话人 |
+| YuE2 RVC 翻唱 | 分离完整歌曲、用 RVC 转换人声并与原伴奏重新混音 |
+| YuE2 训练 RVC 音色 | 对工作台中已试听、已通过预检的 RVC 项目执行训练并返回音色 |
+| YuE2 训练歌曲风格 | 预处理并训练工作台中的 YuE2 AR LoRA，产物可直接连接生成节点 |
 | YuE2 生成语义 Tokens | 高级分阶段推理 |
 | YuE2 声学合成 | 语义 tokens 到声学 latent |
 | YuE2 VAE 解码 | latent 到 48kHz 双声道音频 |
@@ -139,9 +399,15 @@ GitHub Release 只包含代码，不包含模型、Python 运行时或用户作�
 
 YuE2 Music T8 integrates YuE2-3B full-song generation with ComfyUI and includes a standalone local WebUI. Its local scheduler runs models in isolated Python workers, so installing the node does not replace ComfyUI's Torch packages. Version 1.1.4 adds a configurable model directory and code-only GitHub Release update metadata.
 
-Install it with `comfy node install yue2-t8`, then run `install_runtime.bat` once from the node directory and restart ComfyUI. Models are downloaded from [t8star/YuE2-Comfy](https://huggingface.co/t8star/YuE2-Comfy) into `<node-directory>/models`; use the WebUI model settings or `configure_models.bat` to place them on another drive. Keep all six model subdirectories and their configuration files. Windows and an NVIDIA GPU are required, with 24GB VRAM and 45GB free disk space recommended.
+Install it with `comfy node install yue2-t8`, then run `install_runtime.bat` once from the node directory and restart ComfyUI. Models are downloaded from [t8star/YuE2-Comfy](https://huggingface.co/t8star/YuE2-Comfy) into `<node-directory>/models`; use the WebUI model settings or `configure_models.bat` to place them on another drive. Keep all twelve model subdirectories, including RVC, YuE2-training and the four MuLaCover components, with their configuration files. Windows and an NVIDIA GPU are required, with 24GB VRAM and at least 60GB free disk space recommended for installation and migration, plus storage for training data and outputs.
 
-The node pack supports Chinese and English lyrics, editable ABC plans, multi-candidate generation, SheetSage2 transcription, melody remake, Seed-VC reference-voice conversion, staged inference, per-task cancellation, history, and artifact export. The reference-voice workflow accepts a 1–30 second clean voice sample, separates the generated song with Demucs, converts the vocal, and remixes a 48 kHz stereo FLAC. Its page-integrated progress section identifies the current job and every queued job with stage, source, summary, and queue position. Example front-end workflows are in `workflows`.
+The node pack supports Chinese and English lyrics, editable ABC plans, multi-candidate generation, SheetSage2 transcription, melody remake, MuLaCover audio/MIDI remixing, Seed-VC and RVC voice conversion, YuE2 style LoRA and RVC training, staged inference, per-task cancellation, history, and artifact export. Training datasets and rights review are prepared in the local studio; native ComfyUI nodes run the checked project and can connect the resulting model directly to generation or voice conversion. MuLaCover results include playable audio and extracted melody, chord and drum MIDI, and can be sent directly to voice conversion. A separate native, in-process node package is available at [Comfyui-Mulacover-T8](https://github.com/T8mars/Comfyui-Mulacover-T8).
+
+The model root is shared by the WebUI, ComfyUI nodes and native MuLaCover nodes. Keep the twelve model directories (`YuE2-3B`, `YuE2-Vae`, `MuLaCover`, `HeartCodec-oss`, `Qwen3-Embedding-0.6B`, `SymbolicTranscriptor`, `SheetSage2`, `MERT-v2-FullSong`, `Demucs`, `Seed-VC`, `RVC`, and `YuE2-training`) plus `MODEL_MANIFEST.json`, `VOICE_MODEL_MANIFEST.json` and `MULACOVER_MODEL_MANIFEST.json`. YuE2 style training also requires `YuE2-training/regularizer-safe-v1/codec.npy`, `offsets.npy` and `metadata.json`; the installer is pinned to the verified model commit that contains these files.
+
+The standalone v1.5 studio uses one CPython 3.12.10 runtime for music, transcription, Seed-VC, RVC, YuE2 style training and optional GGUF. Its project workspace and content-addressed asset library connect source songs, stems, lyrics, scores, generated versions, voices and trained models. YuE2 AR LoRA training uses immutable train/validation snapshots, pinned Mothersuperior v4 companion resources, loss tracking, resumable checkpoints and an in-page audio preview. Version 1.4.11 samples reproducible 768-token semantic windows (about 30 seconds) from complete songs, while validation checks fixed start, middle and end windows with song-disjoint groups. Trained adapters are currently enabled only for the validated direct-generation mode. The updater migrates legacy runtimes and rolls back a failed startup.
+
+The [CSD Korean Female v1 examples](https://huggingface.co/t8star/YuE2-Comfy/tree/main/Community-Models/CSD-Korean-Female-v1) include an importable RVC singing voice, a YuE2 AR style LoRA, its pinned NAR companion and three audio demos. The matching complete local bundle has both trained examples preinstalled. The source is one unnamed professional Korean female singer documented by CSD, not Go Youn-jung. CSD derivatives are non-commercial CC BY-NC-SA 4.0; the unchanged NAR companion remains CC BY-NC 4.0 and the RVC package also retains its upstream agreement.
 
 ## Links
 
@@ -152,6 +418,7 @@ The node pack supports Chinese and English lyrics, editable ABC plans, multi-can
 - API: https://api.seedance.nz/sign-up?aff=5f4w
 - 在线 AI 应用 / Online AI apps: https://www.runninghub.ai/zh-cn/user-center/1907375370302308353/userPost?inviteCode=rh-v1121
 - ComfyUI 整合包 / Portable package: https://pan.quark.cn/s/264edb7e36bd
+- Full portable bundle on Hugging Face: https://huggingface.co/t8star/YuE2-Comfy/resolve/main/bundles/Yue2-T8-Onekey-v1.5.4-Windows-NVIDIA.rar?download=true
 - Hugging Face: https://huggingface.co/t8star
 - Model repository: https://huggingface.co/t8star/YuE2-Comfy
 - Release validation: [VALIDATION.md](VALIDATION.md)

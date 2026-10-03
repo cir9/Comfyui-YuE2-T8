@@ -20,10 +20,13 @@ from .assistant_rules.provider_capabilities import normalize_extra_parameters
 
 LOCK = threading.RLock()
 PANELS = {"assistant", "create", "plan", "cover"}
+SEEDANCE_DEFAULT_MODEL = "bytedance/doubao-seed-2.1-turbo"
+LEGACY_SEEDANCE_DEFAULT_MODEL = "bytedance/doubao-seed-evolving"
+MAX_ASSISTANT_TOKENS = 262144
 PROVIDERS = {
     "seedance": {"label": "贞贞平价小屋", "base_url": "https://api.seedance.nz/v1",
-                  "default_model": "bytedance/doubao-seed-evolving",
-                  "models": ["bytedance/doubao-seed-evolving"],
+                  "default_model": SEEDANCE_DEFAULT_MODEL,
+                  "models": [SEEDANCE_DEFAULT_MODEL],
                   "signup_url": "https://api.seedance.nz/sign-up?aff=5f4w"},
     "workshop": {"label": "贞贞的 AI 工坊", "base_url": "https://ai.t8star.org/v1",
                  "default_model": "gemini-3.5-flash", "models": ["gemini-3.5-flash"],
@@ -34,8 +37,8 @@ PROVIDERS = {
               "default_model": "Qwen3.8-27B-Q4_K_M.gguf", "models": [], "signup_url": ""},
 }
 DEFAULT_CONFIG = {"provider": "seedance", "base_url": "https://api.seedance.nz/v1",
-                  "model": "bytedance/doubao-seed-evolving",
-                  "credential_id": "", "max_tokens": 4096, "context_size": 16384,
+                  "model": SEEDANCE_DEFAULT_MODEL,
+                  "credential_id": "", "max_tokens": 32768, "context_size": 16384,
                   "gpu_layers": 24, "threads": 4, "think": False, "temperature_policy": "auto",
                   "extra_parameters": {}, "stream": True, "llm_directory": ""}
 
@@ -79,12 +82,16 @@ def models_endpoint(config: dict) -> str:
 
 def fetch_remote_models(config: dict, secret: str, session=None) -> dict:
     """Fetch a bounded OpenAI-compatible model list without exposing upstream bodies."""
-    import requests
     config = normalize_config(config)
     if config["provider"] == "local":
         raise ValueError("本地模式请刷新 GGUF 目录")
     own_session = session is None
-    client = session or requests.Session()
+    requests_module = None
+    if own_session:
+        import requests as requests_module
+        client = requests_module.Session()
+    else:
+        client = session
     if own_session:
         client.trust_env = False
     url = models_endpoint(config)
@@ -101,8 +108,10 @@ def fetch_remote_models(config: dict, secret: str, session=None) -> dict:
                     raw.extend(block)
                     if len(raw) > 2 * 1024 * 1024:
                         raise ValueError("模型 LIST 响应超过 2 MiB，已停止读取")
-        except requests.RequestException:
-            raise ValueError("模型 LIST 网络请求失败；已保留默认模型和手动填写") from None
+        except Exception as exc:
+            if requests_module is not None and isinstance(exc, requests_module.RequestException):
+                raise ValueError("模型 LIST 网络请求失败；已保留默认模型和手动填写") from None
+            raise
         try:
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, ValueError):
@@ -137,10 +146,12 @@ def normalize_config(value: dict) -> dict:
     if not isinstance(value, dict) or set(value) - set(DEFAULT_CONFIG):
         raise ValueError("LLM 配置包含未知字段；密钥请使用独立凭据入口")
     config = {**DEFAULT_CONFIG, **value}
+    if config["provider"] == "local" and "max_tokens" not in value:
+        config["max_tokens"] = 4096
     endpoint(config)
     if not str(config.get("model", "")).strip():
         config["model"] = PROVIDERS[config["provider"]]["default_model"]
-    for key, low, high in (("max_tokens", 64, 32768), ("context_size", 512, 131072),
+    for key, low, high in (("max_tokens", 64, MAX_ASSISTANT_TOKENS), ("context_size", 512, MAX_ASSISTANT_TOKENS),
                            ("gpu_layers", -1, 200), ("threads", 1, 64)):
         item = config[key]
         if type(item) is not int or not low <= item <= high:
@@ -187,10 +198,28 @@ def local_model_identity(root: Path, config: dict) -> list:
     return identity
 
 
-def config_info(root: Path) -> dict:
+def credential_state(config: dict, credentials=None) -> dict:
+    if config["provider"] == "local":
+        return {"required": False, "available": True, "reason": "local"}
+    if credentials is None:
+        available = bool(config.get("credential_id"))
+    else:
+        try:
+            credentials.get(config.get("credential_id", ""), endpoint(config))
+            available = True
+        except ValueError:
+            available = False
+    return {"required": True, "available": available, "reason": "ready" if available else "missing"}
+
+
+def config_info(root: Path, credentials=None) -> dict:
     config = normalize_config(read(root / "userdata/assistant/config.json", {}))
+    # Replace the former bundled default while preserving every other manually
+    # entered model identifier as a Custom choice in the UI.
+    if config["provider"] == "seedance" and config["model"] == LEGACY_SEEDANCE_DEFAULT_MODEL:
+        config["model"] = SEEDANCE_DEFAULT_MODEL
     try:
-        runtime_probe = read(root / "runtime/llm/installed.json", {}).get("probe", {})
+        runtime_probe = read(root / "runtime/installed.json", {}).get("llm", {}).get("probe", {})
     except (OSError, ValueError, AttributeError):
         runtime_probe = {}
     directory = llm_directory(root, config)
@@ -215,23 +244,23 @@ def config_info(root: Path) -> dict:
                                "has_chat_template": info.has_chat_template, "shards": len(shards), "error": error})
             except (OSError, ValueError) as exc:
                 models.append({"id": identifier, "bytes": 0, "error": str(exc)})
-    return {"config": config, "providers": PROVIDERS, "defaults": engine.DEFAULTS,
+    return {"config": config, "credential": credential_state(config, credentials), "providers": PROVIDERS, "defaults": engine.DEFAULTS,
             "options": {"lyrics_modes": engine.LYRIC_MODES, "quality_modes": [engine.STANDARD, engine.REVIEW],
-                        "abc_sources": [engine.ABC_DOWNSTREAM, engine.ABC_GENERATE]},
+                        "abc_sources": [engine.ABC_GENERATE, engine.ABC_DOWNSTREAM]},
             "llm_directory": str(directory), "models": models,
-            "local_runtime": (root / "runtime/llm/python.exe").is_file() and bool(runtime_probe),
+            "local_runtime": (root / "runtime/python.exe").is_file() and bool(runtime_probe),
             "local_gpu_offload": runtime_probe.get("gpu_offload") is True,
             "official_source": engine.official_snapshot()}
 
 
-def save_config(root: Path, value: dict) -> dict:
+def save_config(root: Path, value: dict, credentials=None) -> dict:
     config = normalize_config(value)
     atomic_json(root / "userdata/assistant/config.json", config)
-    return config_info(root)
+    return config_info(root, credentials)
 
 
 def normalize_request(root: Path, value: dict) -> dict:
-    allowed = {"values", "config", "variant_id", "resume_from", "test_connection", "retry_stages", "final_fields"}
+    allowed = {"values", "config", "project_id", "variant_id", "resume_from", "test_connection", "retry_stages", "final_fields"}
     if set(value) - allowed:
         raise ValueError("助手请求包含未知字段；不要把 API Key 放入任务")
     values = value.get("values", {})
@@ -260,13 +289,17 @@ def normalize_request(root: Path, value: dict) -> dict:
         raise ValueError("请填写 API 模型名或选择本地 GGUF")
     result = {"values": values, "config": config, "variant_id": str(value.get("variant_id") or uuid.uuid4().hex)[:100],
               "test_connection": value.get("test_connection") is True}
+    project_id = str(value.get("project_id") or "")
+    if project_id and not re.fullmatch(r"[a-f0-9]{32}", project_id):
+        raise ValueError("无效的项目 ID")
+    result["project_id"] = project_id
     if not result["test_connection"] and not values["music_idea"].strip():
         raise ValueError("请填写歌曲想法")
     if config["provider"] == "local":
         path = within(llm_directory(root, config), llm_directory(root, config) / config["model"])
         if not path.is_file() or path.suffix.lower() != ".gguf" or "mmproj" in path.name.lower():
             raise ValueError("请选择存在的 GGUF 语言模型")
-        if not (root / "runtime/llm/python.exe").is_file():
+        if not (root / "runtime/python.exe").is_file():
             raise ValueError("本地 LLM 环境未安装，请先运行安装脚本；API 创作仍可用")
         local_model_identity(root, config)
     if value.get("resume_from"):
@@ -293,6 +326,14 @@ def normalize_request(root: Path, value: dict) -> dict:
     return result
 
 
+def _draft_path(root: Path, panel: str, project_id: str = "") -> Path:
+    if project_id:
+        if not re.fullmatch(r"[a-f0-9]{32}", project_id):
+            raise ValueError("无效的项目 ID")
+        return root / "userdata/assistant/drafts/projects" / project_id / (panel + ".json")
+    return root / "userdata/assistant/drafts" / (panel + ".json")
+
+
 def save_draft(root: Path, data: dict) -> dict:
     panel = data.get("panel")
     if panel not in PANELS:
@@ -312,7 +353,8 @@ def save_draft(root: Path, data: dict) -> dict:
         elif isinstance(item, str) and engine.API_KEY_PATTERN.search(item):
             raise ValueError("草稿不能包含密钥")
     inspect(payload)
-    path = root / "userdata/assistant/drafts" / (panel + ".json")
+    project_id = str(data.get("project_id") or "")
+    path = _draft_path(root, panel, project_id)
     with LOCK:
         current = read(path, {"schema": 1, "revision": 0, "draft": {}})
         if not isinstance(current, dict) or current.get("schema") != 1 or type(current.get("revision")) is not int:
@@ -321,23 +363,47 @@ def save_draft(root: Path, data: dict) -> dict:
             raise ValueError("草稿已在其他页面更新，请重新载入后合并")
         if path.exists():
             atomic_json(path.with_suffix(".previous.json"), current)
-        result = {"schema": 1, "panel": panel, "revision": current["revision"] + 1, "draft": payload}
+        result = {"schema": 1, "panel": panel, "project_id": project_id,
+                  "revision": current["revision"] + 1, "draft": payload}
         atomic_json(path, result)
         return result
 
 
-def drafts(root: Path) -> dict:
+def drafts(root: Path, project_id: str = "") -> dict:
     result = {}
     for panel in PANELS:
         empty = {"schema": 1, "panel": panel, "revision": 0, "draft": {}}
         try:
-            value = read(root / "userdata/assistant/drafts" / (panel + ".json"), empty)
+            value = read(_draft_path(root, panel, project_id), empty)
             if (not isinstance(value, dict) or value.get("schema") != 1 or type(value.get("revision")) is not int
                     or value["revision"] < 0 or not isinstance(value.get("draft"), dict)):
                 raise ValueError("unsupported draft")
+            # v1 drafts inherited the former downstream-only ABC default. Migrate
+            # that one legacy choice once; v2 drafts preserve an explicit user
+            # decision to leave ABC planning to YuE2.
+            draft = value["draft"]
+            values = draft.get("values") if panel == "assistant" else None
+            defaults_version = draft.get("defaults_version", 0)
+            defaults_version = defaults_version if type(defaults_version) is int else 0
+            if (isinstance(values, dict) and defaults_version < 2
+                    and values.get("abc_source") == engine.ABC_DOWNSTREAM):
+                values["abc_source"] = engine.ABC_GENERATE
+                draft["defaults_version"] = 2
+                value["migrated_defaults"] = ["abc_source"]
             result[panel] = value
         except (OSError, ValueError):
             result[panel] = {**empty, "error": "草稿版本或格式不支持，原文件已保留；请使用匹配版本或从 previous 备份恢复"}
+    return result
+
+
+def all_drafts(root: Path) -> dict:
+    """Return every valid draft for retention scanning without mixing project scopes."""
+    result = {"global": drafts(root)}
+    projects = root / "userdata/assistant/drafts/projects"
+    if projects.is_dir():
+        for directory in projects.iterdir():
+            if directory.is_dir() and re.fullmatch(r"[a-f0-9]{32}", directory.name):
+                result[directory.name] = drafts(root, directory.name)
     return result
 
 

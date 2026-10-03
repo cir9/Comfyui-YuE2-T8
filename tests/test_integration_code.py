@@ -1,9 +1,11 @@
 import hashlib
+import io
 import json
 import os
 import queue
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -16,7 +18,7 @@ from app.yue2_app.artifacts import (
     write_artifact_manifest,
 )
 from app.yue2_app.config import ROOT, model_paths, runtime_ready
-from app.yue2_app.core_worker import generation_kwargs, generation_result, run_decode, run_doctor, run_generate
+from app.yue2_app.core_worker import add_upstream, generation_kwargs, generation_result, run_decode, run_doctor, run_generate
 from app.yue2_app.io import atomic_json, public_job, within
 from app.yue2_app.model_verify import PINNED_MODELS, REQUIRED_FILES, verify_bundle
 from app.yue2_app.retention import RetentionManager
@@ -25,16 +27,62 @@ from app.yue2_app.service import (
     JobStore,
     acquire_instance_lock,
     is_loopback_host,
+    is_matching_loopback_origin,
     job_directory,
     retention_references,
     worker_failure_message,
 )
 from app.yue2_app import service
 from app.yue2_app.worker_common import Cancelled, JobContext
-from app.yue2_app.voice_worker import remix_audio
+from app.yue2_app.voice_worker import gate_converted_vocal, remix_audio
 
 
 class IntegrationCodeTests(unittest.TestCase):
+    def test_saved_korean_plan_loads_on_non_utf8_windows_locale(self):
+        add_upstream(ROOT)
+        from yue2.pipeline import SymbolicPlan
+        from yue2.protocol import SongRequest
+
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            plan = SymbolicPlan(
+                SongRequest(style="한국 동요", lyrics="아침 햇살", cot="off"),
+                None, [], [1, 2, 3],
+            )
+            plan.save(directory)
+            restored = SymbolicPlan.load(directory)
+            self.assertEqual(restored.request.style, "한국 동요")
+            self.assertEqual(restored.request.lyrics, "아침 햇살")
+
+    def test_rvc_activity_gate_suppresses_hallucinated_tone_during_silent_source(self):
+        import numpy as np
+        import soundfile as sf
+
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            root = Path(directory)
+            reference_rate = 44100
+            converted_rate = 48000
+            seconds = 2
+            reference = np.zeros(reference_rate * seconds, dtype=np.float32)
+            reference[reference_rate:] = 0.08 * np.sin(
+                2 * np.pi * 220 * np.arange(reference_rate) / reference_rate)
+            converted = 0.08 * np.sin(
+                2 * np.pi * 330 * np.arange(converted_rate * seconds) / converted_rate).astype(np.float32)
+            reference_path = root / "separated.wav"
+            converted_path = root / "converted.wav"
+            sf.write(reference_path, reference, reference_rate, subtype="FLOAT")
+            sf.write(converted_path, converted, converted_rate, subtype="FLOAT")
+
+            report = gate_converted_vocal(reference_path, converted_path)
+            gated, rate = sf.read(converted_path, dtype="float32")
+            silent_rms = float(np.sqrt(np.mean(np.square(gated[:converted_rate * 3 // 4]))))
+            active_rms = float(np.sqrt(np.mean(np.square(gated[converted_rate * 5 // 4:]))))
+
+            self.assertEqual(rate, converted_rate)
+            self.assertEqual(report["version"], "rms-v2")
+            self.assertLess(silent_rms, 1e-5)
+            self.assertGreater(active_rms, 0.04)
+            self.assertGreater(report["muted_fraction"], 0.35)
+
     def test_model_directory_setting_supports_another_drive_layout(self):
         with tempfile.TemporaryDirectory(dir=ROOT) as directory:
             root = Path(directory)
@@ -113,14 +161,54 @@ class IntegrationCodeTests(unittest.TestCase):
                 JobContext(job).finish(result={"ok": True})
             self.assertNotEqual(json.loads((job / "status.json").read_text())["status"], "complete")
 
+    def test_committed_finish_cannot_be_lost_to_concurrent_cancel(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            outputs = Path(directory) / "jobs"
+            outputs.mkdir()
+            store = object.__new__(JobStore)
+            store.storage_lock = threading.RLock(); store.lock = threading.RLock()
+            store.current_process = None; store.jobs = {}
+            errors = []
+            with mock.patch.object(service, "OUTPUTS", outputs):
+                for index in range(20):
+                    job_id = f"20260916-1200{index:02d}-{index:08x}"
+                    job = outputs / job_id; job.mkdir()
+                    status = {"id": job_id, "kind": "rvc_storage_move", "status": "running",
+                              "stage": "commit", "created_at": time.time()}
+                    atomic_json(job / "status.json", status)
+                    store.jobs[job_id] = status; store.current_id = job_id
+                    barrier = threading.Barrier(2)
+                    def finish():
+                        try: barrier.wait(); JobContext(job).finish(committed=True, result={"ok": True})
+                        except BaseException as exc: errors.append(exc)
+                    def cancel():
+                        try: barrier.wait(); store.cancel(job_id)
+                        except BaseException as exc: errors.append(exc)
+                    threads = [threading.Thread(target=finish), threading.Thread(target=cancel)]
+                    for thread in threads: thread.start()
+                    for thread in threads: thread.join()
+                    self.assertEqual(json.loads((job / "status.json").read_text())["status"], "complete")
+            self.assertEqual(errors, [])
+
     def test_public_status_hides_command(self):
         self.assertNotIn("command", public_job({"id": "x", "command": ["secret"]}))
+
+    def test_http_validation_messages_are_localized(self):
+        with self.assertRaisesRegex(ValueError, "查询参数 limit 必须是整数"):
+            service.Handler._query_integer({"limit": ["abc"]}, "limit", 100, minimum=1)
+        request = type("Request", (), {
+            "headers": {"Content-Type": "application/json", "Content-Length": "5"},
+            "rfile": io.BytesIO(b"{bad}")
+        })()
+        with self.assertRaisesRegex(ValueError, "请求 JSON 格式无效"):
+            service.Handler._body_json(request)
 
     def test_active_duplicate_request_reuses_existing_job(self):
         with tempfile.TemporaryDirectory(dir=ROOT) as directory:
             outputs = Path(directory) / "jobs"
             outputs.mkdir()
             store = object.__new__(JobStore)
+            store.updating = False
             store.storage_lock = threading.RLock()
             store.lock = threading.RLock()
             store.jobs = {}
@@ -144,14 +232,21 @@ class IntegrationCodeTests(unittest.TestCase):
             outputs = Path(directory) / "jobs"
             outputs.mkdir()
             store = object.__new__(JobStore)
+            store.updating = False
             store.storage_lock = threading.RLock()
             store.lock = threading.RLock()
             store.jobs = {}
             store.pending = queue.Queue()
             store.current_id = None
             store.current_process = None
-            request = {"source_path": "song.flac", "reference_path": "voice.wav"}
-            with mock.patch.object(service, "OUTPUTS", outputs), \
+            import numpy as np
+            import soundfile as sf
+            uploads = Path(directory) / "uploads"
+            uploads.mkdir()
+            for name in ("song.flac", "voice.wav"):
+                sf.write(uploads / name, np.zeros(32000), 16000)
+            request = {"source_path": str(uploads / "song.flac"), "reference_path": str(uploads / "voice.wav")}
+            with mock.patch.object(service, "ROOT", Path(directory)), mock.patch.object(service, "OUTPUTS", outputs), \
                     mock.patch.object(service, "runtime_ready", return_value={
                         "capabilities": {"voice_conversion": True}
                     }):
@@ -159,11 +254,79 @@ class IntegrationCodeTests(unittest.TestCase):
             self.assertEqual(created["kind"], "voice_convert")
             self.assertEqual(created["summary"], "参考音色翻唱 · voice.wav")
 
+    def test_reference_voice_rejects_string_boolean(self):
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            outputs = Path(directory) / "jobs"; outputs.mkdir()
+            uploads = Path(directory) / "uploads"; uploads.mkdir()
+            import numpy as np
+            import soundfile as sf
+            for name in ("song.flac", "voice.wav"):
+                sf.write(uploads / name, np.zeros(32000), 16000)
+            store = object.__new__(JobStore)
+            store.updating = False; store.storage_lock = threading.RLock(); store.lock = threading.RLock()
+            store.jobs = {}; store.pending = queue.Queue(); store.current_id = None; store.current_process = None
+            request = {"source_path": str(uploads / "song.flac"),
+                       "reference_path": str(uploads / "voice.wav"), "auto_f0_adjust": "false"}
+            with mock.patch.object(service, "ROOT", Path(directory)), mock.patch.object(service, "OUTPUTS", outputs), \
+                    mock.patch.object(service, "runtime_ready", return_value={
+                        "capabilities": {"voice_conversion": True}}), \
+                    self.assertRaisesRegex(ValueError, "自动音高调整必须是 true 或 false"):
+                store.create("voice_convert", request, source="webui")
+
+    def test_asset_and_completed_job_references_stay_server_side(self):
+        import numpy as np
+        import soundfile as sf
+        from app.yue2_app.asset_library import AssetLibrary
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            root = Path(directory)
+            outputs = root / "outputs" / "jobs"; outputs.mkdir(parents=True)
+            uploads = root / "uploads"; uploads.mkdir()
+            source = uploads / "source.wav"
+            sf.write(source, np.zeros(96000, dtype=np.float32), 16000)
+            library = AssetLibrary(root)
+            asset = library.import_file(source, kind="song", title="大型本地歌曲",
+                                        metadata={"duration": 6.0})
+            old_job_id = "20260916-010101-deadbeef"
+            old_job = outputs / old_job_id; old_job.mkdir()
+            old_audio = old_job / "audio.flac"
+            sf.write(old_audio, np.zeros(16000, dtype=np.float32), 16000)
+            atomic_json(old_job / "status.json", {"id": old_job_id, "kind": "generate",
+                                                   "status": "complete", "created_at": 1})
+            store = object.__new__(JobStore)
+            store.updating = False
+            store.storage_lock = threading.RLock(); store.lock = threading.RLock()
+            store.jobs = {old_job_id: {"id": old_job_id, "kind": "generate",
+                                       "status": "complete", "created_at": 1}}
+            store.pending = queue.Queue(); store.current_id = None; store.current_process = None
+            with mock.patch.object(service, "ROOT", root), mock.patch.object(service, "OUTPUTS", outputs), \
+                    mock.patch.object(service, "runtime_ready", return_value={
+                        "capabilities": {"transcription": True}}):
+                created = store.create("transcribe", {
+                    "source_path": {"$asset": asset["id"],
+                                    "revision_id": asset["current_revision_id"], "name": asset["title"]},
+                }, source="webui")
+                saved = json.loads((outputs / created["id"] / "job.json").read_text(encoding="utf-8"))
+                materialized = Path(saved["request"]["source_path"])
+                self.assertTrue(materialized.is_file())
+                self.assertTrue(within(root / "uploads", materialized))
+                self.assertEqual(saved["request"]["_local_references"][0]["asset_id"], asset["id"])
+                references = []
+                linked = store._resolve_local_references({
+                    "$job_file": {"job_id": old_job_id, "relative": "audio.flac"}, "name": "成品"
+                }, references)
+                self.assertTrue(Path(linked).is_file())
+                self.assertEqual(references[0]["job_id"], old_job_id)
+                with self.assertRaises(ValueError):
+                    store._resolve_local_references({
+                        "$job_file": {"job_id": old_job_id, "relative": "../../outside.wav"}
+                    }, [])
+
     def test_result_panel_survives_resume_and_legacy_cover_is_restored(self):
         with tempfile.TemporaryDirectory(dir=ROOT) as directory:
             outputs = Path(directory) / "jobs"
             outputs.mkdir()
             store = object.__new__(JobStore)
+            store.updating = False
             store.storage_lock = threading.RLock()
             store.lock = threading.RLock()
             store.jobs = {}
@@ -177,8 +340,10 @@ class IntegrationCodeTests(unittest.TestCase):
                 legacy.pop("result_panel")
                 atomic_json(status_path, legacy)
                 self.assertEqual(store.get(created["id"])["result_panel"], "cover")
-                resumed = store.resume(created["id"])
+                resumed = store.resume(created["id"], {"memory_budget_gib": 8})
                 self.assertEqual(resumed["result_panel"], "cover")
+                resumed_job = json.loads((outputs / resumed["id"] / "job.json").read_text())
+                self.assertEqual(resumed_job["request"]["memory_budget_gib"], 8)
 
     def test_voice_remix_outputs_finite_48khz_stereo(self):
         import importlib.util
@@ -205,6 +370,7 @@ class IntegrationCodeTests(unittest.TestCase):
             outputs = Path(directory) / "jobs"
             outputs.mkdir()
             store = object.__new__(JobStore)
+            store.updating = False
             store.storage_lock = threading.RLock()
             store.lock = threading.RLock()
             store.jobs = {}
@@ -458,6 +624,15 @@ class IntegrationCodeTests(unittest.TestCase):
         for value in ("attacker.example:8189", "localhost@attacker.example", "127.0.0.1:bad", ""):
             self.assertFalse(is_loopback_host(value), value)
 
+    def test_loopback_origin_accepts_aliases_only_on_same_port(self):
+        self.assertTrue(is_matching_loopback_origin("http://localhost:8189", "127.0.0.1:8189"))
+        self.assertTrue(is_matching_loopback_origin("http://[::1]:8189", "localhost:8189"))
+        self.assertTrue(is_matching_loopback_origin("http://127.0.0.1", "localhost"))
+        self.assertFalse(is_matching_loopback_origin("http://localhost:8190", "127.0.0.1:8189"))
+        self.assertFalse(is_matching_loopback_origin("https://localhost:8189", "127.0.0.1:8189"))
+        self.assertFalse(is_matching_loopback_origin("https://attacker.example", "127.0.0.1:8189"))
+        self.assertFalse(is_matching_loopback_origin("chrome-extension://example", "127.0.0.1:8189"))
+
     def test_instance_lock_rejects_duplicate_service(self):
         with tempfile.TemporaryDirectory(dir=ROOT) as directory:
             root = Path(directory)
@@ -472,7 +647,7 @@ class IntegrationCodeTests(unittest.TestCase):
     def test_runtime_ready_rejects_placeholder_files(self):
         with tempfile.TemporaryDirectory(dir=ROOT) as directory:
             root = Path(directory)
-            for relative in ("runtime/core/python.exe", "runtime/transcribe/python.exe", "runtime/ffmpeg/ffmpeg.exe",
+            for relative in ("runtime/python.exe", "runtime/ffmpeg/ffmpeg.exe",
                              "models/YuE2-3B/model.safetensors", "models/YuE2-Vae/model.safetensors",
                              "models/SheetSage2/model.safetensors", "models/MERT-v2-FullSong/model.safetensors"):
                 path = root / relative
@@ -486,7 +661,7 @@ class IntegrationCodeTests(unittest.TestCase):
             browser = root / "runtime" / "playwright" / "chromium_headless_shell-1" / "chrome-headless-shell-win64" / "chrome-headless-shell.exe"
             browser.parent.mkdir(parents=True)
             browser.write_bytes(b"browser")
-            (root / "runtime" / "transcribe" / "python.exe").write_bytes(b"python")
+            (root / "runtime" / "python.exe").write_bytes(b"python")
             self.assertFalse(runtime_ready(root)["capabilities"]["score_renderer"])
 
     def test_doctor_fails_without_cuda(self):
@@ -507,6 +682,7 @@ class IntegrationCodeTests(unittest.TestCase):
             atomic_json(outputs / job_id / "status.json", {"id": job_id, "status": "complete"})
             (artifact / "one.bin").write_bytes(b"one")
             store = object.__new__(JobStore)
+            store.updating = False
             store.storage_lock = threading.RLock()
             store.lock = threading.RLock()
             store.jobs = {}
@@ -536,19 +712,108 @@ class IntegrationCodeTests(unittest.TestCase):
                 store.export(job_id)
             self.assertEqual(list((root / "exports").glob(".*.tmp")), [])
 
+    def test_completed_yue2_training_exports_model_package(self):
+        from app.yue2_app.asset_library import AssetLibrary
+
+        with tempfile.TemporaryDirectory(dir=ROOT) as directory:
+            root = Path(directory)
+            outputs = root / "outputs" / "jobs"
+            job_id = "20260915-173543-00000002"
+            model_source = root / "adapter.safetensors"
+            model_source.write_bytes(b"trained-yue2-adapter")
+            asset = AssetLibrary(root).import_file(
+                model_source, kind="model", title='我的歌曲风格: 200 步',
+                metadata={"model_type": "yue2_ar_lora", "completed_training_steps": 200,
+                          "selected_validation_step": 200, "rank": 8},
+                provenance={"training_run_id": "run-1"},
+            )
+            atomic_json(outputs / job_id / "status.json", {
+                "id": job_id, "kind": "yue2_train", "status": "complete",
+                "result": {"model_asset": {"id": asset["id"]}},
+            })
+            store = object.__new__(JobStore)
+            store.updating = False
+            store.storage_lock = threading.RLock()
+            store.lock = threading.RLock()
+            store.jobs = {}
+            with mock.patch.object(service, "ROOT", root), mock.patch.object(service, "OUTPUTS", outputs):
+                destination = store.export(job_id)
+            exported_model = destination / "我的歌曲风格_ 200 步.safetensors"
+            self.assertEqual(exported_model.read_bytes(), b"trained-yue2-adapter")
+            manifest = json.loads((destination / "model.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["asset_id"], asset["id"])
+            self.assertEqual(manifest["model_file"], exported_model.name)
+            self.assertEqual(manifest["metadata"]["completed_training_steps"], 200)
+            self.assertEqual(manifest["sha256"], hashlib.sha256(b"trained-yue2-adapter").hexdigest())
+
+    def test_training_model_and_history_pagination_are_bounded(self):
+        web = Path(__file__).resolve().parents[1] / "app" / "web"
+        javascript = (web / "workbench.js").read_text(encoding="utf-8")
+        app_javascript = (web / "app.js").read_text(encoding="utf-8")
+        html = (web / "index.html").read_text(encoding="utf-8")
+        self.assertIn("const trainingModelPageSize = 3", javascript)
+        self.assertIn("const historyPageSize = 10", app_javascript)
+        self.assertIn('id="training-model-prev"', html)
+        self.assertIn('id="training-model-next"', html)
+        self.assertNotIn('class="ghost compact" type="button" data-copy-trained-model-path', javascript)
+        self.assertIn("const projectTimelinePageSize=8,projectAssetPageSize=10", javascript)
+        self.assertIn("allTrainingRuns('yue2_style')", javascript)
+        self.assertIn("project_id=${encodeURIComponent(scope)}", (web / "assistant.js").read_text(encoding="utf-8"))
+        self.assertIn('class="skip-link"', html)
+
+    def test_visible_project_and_creator_links_use_expected_destinations(self):
+        web = Path(__file__).resolve().parents[1] / "app" / "web"
+        html = (web / "index.html").read_text(encoding="utf-8")
+        css = (web / "workbench.css").read_text(encoding="utf-8")
+        for value in (
+            "https://github.com/T8mars/Comfyui-YuE2-T8",
+            "https://registry.comfy.org/nodes/yue2-t8",
+            "https://huggingface.co/t8star/YuE2-Comfy",
+            "https://space.bilibili.com/385085361",
+            "https://www.youtube.com/@T8star-Aix/",
+        ):
+            self.assertIn(f'href="{value}"', html)
+        self.assertNotIn("body > header .lead, body > header .project-meta { display: none; }", css)
+        self.assertIn("body > header .project-meta", css)
+
     def test_workflows_are_well_formed(self):
-        workflows = list((ROOT / "workflows").glob("*.json"))
-        self.assertEqual({path.name[:2] for path in workflows}, {"01", "02", "03", "04"})
+        workflows = list((Path(__file__).resolve().parents[1] / "workflows").glob("*.json"))
+        self.assertEqual({path.name[:2] for path in workflows}, {"01", "02", "03", "04", "05", "06"})
+        self.assertEqual(len(workflows), 12)
         for path in workflows:
             data = json.loads(path.read_text(encoding="utf-8"))
             node_ids = {node["id"] for node in data["nodes"]}
-            self.assertIn("YuE2ModelLoader", {node["type"] for node in data["nodes"]})
-            for node in data["nodes"]:
-                if node["type"] == "YuE2ModelLoader":
-                    self.assertEqual(node["widgets_values"][2:], [True, "sdpa", 256])
+            node_types = {node["type"] for node in data["nodes"]}
+            if path.name.startswith("06"):
+                self.assertIn("YuE2RVCTrain", node_types)
+                self.assertIn("YuE2RVCCover", node_types)
+            else:
+                self.assertIn("YuE2ModelLoader", node_types)
             for link in data["links"]:
                 self.assertIn(link[1], node_ids)
                 self.assertIn(link[3], node_ids)
+
+    def test_ci_and_registry_gate_pin_actions_and_publish_only_immutable_tags(self):
+        github = Path(__file__).resolve().parents[1] / ".github/workflows"
+        quality = (github / "quality.yml").read_text(encoding="utf-8")
+        publish = (github / "publish.yml").read_text(encoding="utf-8")
+        for workflow in (quality, publish):
+            self.assertRegex(workflow, r"actions/checkout@[0-9a-f]{40}")
+            self.assertRegex(workflow, r"actions/setup-python@[0-9a-f]{40}")
+            self.assertNotIn("actions/checkout@v", workflow)
+            self.assertNotIn("actions/setup-python@v", workflow)
+        self.assertIn("python scripts/ui_browser_smoke.py", quality)
+        self.assertRegex(quality, r"actions/upload-artifact@[0-9a-f]{40}")
+        self.assertRegex(publish, r"Comfy-Org/publish-node-action@[0-9a-f]{40}")
+        self.assertIn('- "v*"', publish)
+        self.assertIn("Require successful Quality run for this commit", publish)
+        self.assertTrue((Path(__file__).resolve().parents[1] / "scripts/ui_browser_smoke.py").is_file())
+        self.assertIn('python-version: "3.12"', publish)
+        self.assertEqual(publish.count('"${{ steps.python.outputs.python-path }}" - <<\'PY\''), 4)
+
+    def test_launcher_exits_after_success_so_updates_can_replace_it(self):
+        source = (Path(__file__).resolve().parents[1] / "scripts/launcher/YuE2Launcher.cs").read_text(encoding="utf-8")
+        self.assertIn("return Finish(0, null, true);", source)
 
 
 if __name__ == "__main__":

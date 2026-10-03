@@ -3,50 +3,100 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="/static/favicon.ico" sizes="any">
   <title>YuE2 本地音乐工作室</title>
+  <link rel="stylesheet" href="/static/vendor/bootstrap-icons.css">
   <link rel="stylesheet" href="/static/style.css">
   <link rel="stylesheet" href="/static/assistant.css">
   <link rel="stylesheet" href="/static/transcription.css">
+  <link rel="stylesheet" href="/static/workbench.css">
+  <link rel="stylesheet" href="/static/midi_editor.css">
 </head>
-<body>
+<body data-active-tab="project">
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+  <aside class="studio-sidebar" aria-label="音乐工作台导航">
+    <div class="studio-brand"><span class="brand-mark"><i class="bi bi-soundwave"></i></span><span><b>YuE2 Studio</b><small>本地音乐工作台</small></span></div>
+    <div class="sidebar-project"><small>当前项目</small><button id="sidebar-project-button" type="button"><span id="sidebar-project-name">未选择项目</span><i class="bi bi-chevron-expand"></i></button></div>
+    <div class="sidebar-group"><small>工作台</small>
+      <button class="tab active" data-tab="project"><i class="bi bi-grid-1x2"></i>歌曲项目</button>
+      <button class="tab" data-tab="assets"><i class="bi bi-collection-play"></i>资产库</button>
+    </div>
+    <div class="sidebar-group"><small>创作</small>
+      <button class="tab" data-tab="create"><i class="bi bi-music-note-beamed"></i>歌曲创作</button>
+      <button class="tab" data-tab="plan"><i class="bi bi-music-note-list"></i>乐谱计划</button>
+      <button class="tab" data-tab="transcription"><i class="bi bi-music-note-list"></i>音频转谱 / 和弦预览</button>
+      <button class="tab" data-tab="midi"><i class="bi bi-keyboard"></i>MIDI 编辑器</button>
+      <button class="tab" data-tab="remix"><i class="bi bi-sliders"></i>重新编曲</button>
+      <button class="tab" data-tab="cover"><i class="bi bi-mic"></i>旋律与音色</button>
+      <button class="tab" data-tab="assistant"><i class="bi bi-stars"></i>AI 创作助手</button>
+    </div>
+    <div class="sidebar-group"><small>模型与任务</small>
+      <button class="tab" data-tab="training"><i class="bi bi-gpu-card"></i>训练工作台</button>
+      <button class="tab" data-tab="voices"><i class="bi bi-person-bounding-box"></i>我的音色</button>
+      <button class="tab" data-tab="history"><i class="bi bi-clock-history"></i>任务与版本</button>
+    </div>
+    <button id="sidebar-settings" class="sidebar-settings" type="button"><i class="bi bi-gear"></i>模型与设置</button>
+  </aside>
+  <button id="mobile-workspace-menu" class="mobile-workspace-menu" type="button" aria-haspopup="dialog" aria-controls="workspace-menu-dialog"><i class="bi bi-grid-3x3-gap"></i><span>全部功能</span></button>
+  <dialog id="workspace-menu-dialog" class="workspace-menu-dialog" aria-labelledby="workspace-menu-title">
+    <form method="dialog">
+      <div class="canvas-head"><h3 id="workspace-menu-title">切换工作区</h3><button class="ghost compact" value="cancel" aria-label="关闭全部功能菜单"><i class="bi bi-x-lg"></i></button></div>
+      <div class="workspace-menu-grid">
+        <button class="ghost" type="button" data-go-tab="project"><i class="bi bi-grid-1x2"></i>歌曲项目</button>
+        <button class="ghost" type="button" data-go-tab="assets"><i class="bi bi-collection-play"></i>资产库</button>
+        <button class="ghost" type="button" data-go-tab="create"><i class="bi bi-music-note-beamed"></i>歌曲创作</button>
+        <button class="ghost" type="button" data-go-tab="plan"><i class="bi bi-music-note-list"></i>乐谱计划</button>
+        <button class="ghost" type="button" data-go-tab="transcription"><i class="bi bi-music-note-list"></i>音频转谱 / 和弦预览</button>
+        <button class="ghost" type="button" data-go-tab="midi"><i class="bi bi-keyboard"></i>MIDI 编辑器</button>
+        <button class="ghost" type="button" data-go-tab="remix"><i class="bi bi-sliders"></i>重新编曲</button>
+        <button class="ghost" type="button" data-go-tab="cover"><i class="bi bi-mic"></i>旋律与音色</button>
+        <button class="ghost" type="button" data-go-tab="assistant"><i class="bi bi-stars"></i>AI 创作助手</button>
+        <button class="ghost" type="button" data-go-tab="training"><i class="bi bi-gpu-card"></i>训练工作台</button>
+        <button class="ghost" type="button" data-go-tab="voices"><i class="bi bi-person-bounding-box"></i>我的音色</button>
+        <button class="ghost" type="button" data-go-tab="history"><i class="bi bi-clock-history"></i>任务与版本</button>
+      </div>
+    </form>
+  </dialog>
   <header>
     <div>
       <p class="eyebrow">YUЕ2 · LOCAL MUSIC STUDIO</p>
       <h1>把旋律写清楚，再让声音发生。</h1>
-      <p class="lead">本地歌词作曲、ABC 乐谱编辑、旋律重制与参考音色翻唱。所有推理都在你的 NVIDIA GPU 上完成。</p>
+      <button id="header-project-button" class="header-project-context" type="button"><i class="bi bi-folder2-open"></i><span>当前项目</span><b id="header-project-name">未选择项目</b><i class="bi bi-chevron-right"></i></button>
+      <button id="mobile-header-details" class="mobile-header-details ghost compact" type="button" aria-expanded="false"><i class="bi bi-info-circle"></i>链接与维护</button>
+      <p class="lead">音乐生成在本机 GPU 上完成；AI 创作助手可选择 API 或本地模型。</p>
       <div class="project-meta" aria-label="项目与作者链接">
         <a class="creator-credit" href="https://space.bilibili.com/385085361" target="_blank" rel="noreferrer">制作者 By B站UP主：T8star-Aix</a>
         <span class="project-links">
-          <a href="https://github.com/T8mars/Comfyui-YuE2-T8" target="_blank" rel="noreferrer">GitHub</a>
-          <a href="https://huggingface.co/t8star/YuE2-Comfy" target="_blank" rel="noreferrer">Hugging Face 模型</a>
+          <a href="https://github.com/T8mars/Comfyui-YuE2-T8" target="_blank" rel="noreferrer"><i class="bi bi-github"></i> GitHub 源码</a>
+          <a href="https://registry.comfy.org/nodes/yue2-t8" target="_blank" rel="noreferrer"><i class="bi bi-diagram-3"></i> ComfyUI 节点</a>
+          <a href="https://huggingface.co/t8star/YuE2-Comfy" target="_blank" rel="noreferrer"><i class="bi bi-box-seam"></i> 模型权重</a>
           <a href="https://space.bilibili.com/385085361" target="_blank" rel="noreferrer">B站</a>
-          <a href="https://www.youtube.com/@T8star-Aix/" target="_blank" rel="noreferrer">YouTube</a>
+          <a href="https://www.youtube.com/@T8star-Aix/" target="_blank" rel="noreferrer"><i class="bi bi-youtube"></i> YouTube</a>
+          <a href="https://api.seedance.nz/sign-up?aff=5f4w" target="_blank" rel="noreferrer"><i class="bi bi-key"></i> API</a>
+          <a href="https://www.runninghub.ai/zh-cn/user-center/1907375370302308353/userPost?inviteCode=rh-v1121" target="_blank" rel="noreferrer"><i class="bi bi-cloud"></i> 在线 AI</a>
+          <a href="https://pan.quark.cn/s/264edb7e36bd" target="_blank" rel="noreferrer"><i class="bi bi-download"></i> ComfyUI 整合包</a>
+          <a href="https://huggingface.co/t8star" target="_blank" rel="noreferrer"><i class="bi bi-person-badge"></i> HF 主页</a>
         </span>
       </div>
     </div>
     <div class="status-card">
       <span id="health-dot" class="dot"></span>
       <div><b id="health-title">正在检查运行环境</b><small id="health-detail">请稍候</small></div>
-      <button id="task-center-jump" class="workload hidden" type="button"></button>
-      <div class="doctor-action"><button id="doctor-button" class="ghost" type="button">重新进行完整自检</button><small>环境正常时通常无需运行</small></div>
-      <div class="update-action">
-        <button id="update-button" class="ghost compact" type="button">检查更新</button>
-        <small id="update-status" aria-live="polite">正在读取当前版本…</small>
+      <button id="task-center-jump" class="workload hidden" type="button" aria-label="打开后台任务进度">
+        <span class="workload-copy"><b id="background-progress-title">后台任务</b><small id="background-progress-detail">正在读取进度</small></span>
+        <span id="background-progress-track" class="workload-track" aria-hidden="true"><span id="background-progress-bar"></span></span>
+      </button>
+      <div class="header-actions">
+        <div class="doctor-action"><button id="doctor-button" class="ghost" type="button">重新进行完整自检</button><small>环境正常时通常无需运行</small></div>
+        <div class="update-action">
+          <button id="update-button" class="ghost compact" type="button">检查更新</button>
+          <small id="update-status" aria-live="polite">正在读取当前版本…</small>
+        </div>
       </div>
     </div>
   </header>
 
-  <nav>
-    <button class="tab active" data-tab="create">创作</button>
-    <button class="tab" data-tab="plan">乐谱计划</button>
-    <button class="tab" data-tab="transcription">音频转谱</button>
-    <button class="tab" data-tab="cover">旋律重制 / 参考音色</button>
-    <button class="tab" data-tab="assistant">AI 创作助手</button>
-    <button class="tab" data-tab="history">历史</button>
-  </nav>
-
-  <main>
-    <section id="latest-task" class="results hidden" aria-live="polite" aria-label="最近任务结果"></section>
+  <main id="main-content" tabindex="-1">
     <section id="task-center" class="task-center hidden" aria-live="polite" aria-label="任务进度">
       <header class="task-center-head">
         <div><span class="task-center-label">任务进度</span><h2>正在处理你的音乐</h2></div>
@@ -72,7 +122,7 @@
         <div class="model-settings-copy">
           <h3>模型文件夹</h3>
           <p>默认使用整合包内的 <code>models</code>。需要节省当前磁盘空间时，可以填写其他硬盘上的绝对路径；更改前请先等待所有任务结束。</p>
-          <p>所选文件夹需要直接包含 <code>YuE2-3B</code>、<code>YuE2-Vae</code>、<code>SheetSage2</code>、<code>MERT-v2-FullSong</code>、<code>Seed-VC</code>、<code>Demucs</code> 以及两个模型清单。</p>
+          <p>所选文件夹需要直接包含 <code>YuE2-3B</code>、<code>YuE2-Vae</code>、<code>SheetSage2</code>、<code>MERT-v2-FullSong</code>、<code>Seed-VC</code>、<code>Demucs</code>、<code>RVC</code>、<code>YuE2-training</code>、<code>MuLaCover</code>、<code>HeartCodec-oss</code>、<code>Qwen3-Embedding-0.6B</code> 与 <code>SymbolicTranscriptor</code>。</p>
           <a href="https://huggingface.co/t8star/YuE2-Comfy" target="_blank" rel="noreferrer">打开 Hugging Face 模型仓库</a>
         </div>
         <form id="model-settings-form" class="model-settings-form">
@@ -87,7 +137,68 @@
       </div>
     </details>
 
-    <section id="create" class="panel active">
+    <section id="midi" class="panel" aria-label="MIDI 编辑器"><div id="midi-editor-root"></div></section>
+    <section id="project" class="panel active">
+      <div class="workspace-heading"><div><p class="eyebrow">SONG PROJECT</p><h2>歌曲项目</h2><p>把素材、歌词、乐谱、生成版本和音色处理放在同一个作品里。</p></div><button id="new-project" class="primary" type="button"><i class="bi bi-plus-lg"></i> 新建项目</button></div>
+      <details id="new-user-guide" class="result-card new-user-guide"><summary>第一次使用：四步完成一首歌</summary><ol><li><b>新建歌曲项目</b><span>每次生成和处理都会自动归档，切换页面也不会丢。</span></li><li><b>准备歌词与曲风</b><span>可以直接去“歌曲创作”，也可以先让“AI 创作助手”生成。</span></li><li><b>生成并试听</b><span>后台任务会持续显示进度，完成后播放器留在当前页面和任务记录。</span></li><li><b>继续编曲或换音色</b><span>把满意版本发送到重新编曲、旋律与音色，再选为主版本导出。</span></li></ol></details>
+      <div class="project-toolbar">
+        <label>当前项目<select id="workbench-project-select"><option value="">选择或新建项目</option></select></label>
+        <button id="refresh-project" class="ghost" type="button"><i class="bi bi-arrow-clockwise"></i> 刷新</button>
+        <button id="rename-project" class="ghost" type="button">重命名</button>
+        <button id="archive-project" class="ghost" type="button">归档</button>
+        <button id="export-project" class="primary" type="button" disabled>导出主版本</button>
+        <span id="project-state" class="meta" role="status">先选择项目，后续作品会自动归档到这里。</span>
+      </div>
+      <details class="result-card archived-project-card"><summary>已归档项目（可恢复）</summary><div id="archived-projects" class="archived-projects"><p class="meta">正在读取已归档项目…</p></div></details>
+      <div class="project-workspace">
+        <section class="project-canvas">
+          <div class="canvas-head"><div><small>当前作品</small><h3 id="project-title">尚未选择项目</h3></div><div class="toolbar"><button class="ghost compact tab" data-tab="assistant"><i class="bi bi-stars"></i> 写歌词</button><button class="primary compact tab" data-tab="create"><i class="bi bi-play-fill"></i> 开始创作</button></div></div>
+          <div id="project-timeline" class="project-timeline empty-state"><i class="bi bi-music-note-beamed"></i><b>项目还没有音乐版本</b><p>从资产库加入素材，或生成第一首歌曲。生成结果会自动回到当前项目。</p></div>
+          <div class="workflow-strip" aria-label="作品流程"><span class="active">1 整理素材</span><span>2 歌词与乐谱</span><span>3 生成版本</span><span>4 音色处理</span><span>5 选定导出</span></div>
+        </section>
+        <aside class="project-inspector"><h3>项目内容</h3><div id="project-assets"><p class="meta">选择项目后显示固定版本的素材。</p></div><button class="ghost full tab" data-tab="assets"><i class="bi bi-plus-circle"></i> 从资产库添加</button></aside>
+      </div>
+    </section>
+
+    <section id="assets" class="panel">
+      <div class="workspace-heading"><div><p class="eyebrow">ASSET LIBRARY</p><h2>资产库</h2><p>统一整理歌曲、干声、伴奏、参考音色、歌词、ABC 乐谱、MIDI、作品和模型。</p></div><label class="primary file-action"><i class="bi bi-upload"></i> 导入文件<input id="asset-upload" type="file" accept="audio/*,.mid,.midi,audio/midi" multiple></label></div>
+      <div id="asset-training-guidance" class="asset-training-guidance hidden" role="status"><div><b>为 YuE2 训练选择歌曲</b><p id="asset-training-guidance-copy">把歌曲加入当前项目，训练页才会显示；至少准备两首不同歌曲。</p></div><button id="asset-training-back" class="ghost compact" type="button">返回训练页</button></div>
+      <div class="asset-controls"><label>类型<select id="asset-kind"><option value="">全部类型</option><option value="song">歌曲</option><option value="work">作品</option><option value="vocal">人声</option><option value="instrumental">伴奏</option><option value="reference_voice">参考音色</option><option value="lyrics">歌词</option><option value="style">曲风</option><option value="score">乐谱</option><option value="midi">MIDI</option><option value="model">模型</option></select></label><label class="asset-search"><i class="bi bi-search"></i><input id="asset-query" type="search" placeholder="搜索名称或标签" aria-label="搜索资产名称或标签"></label><button id="migrate-assets" class="ghost" type="button"><i class="bi bi-folder-plus"></i> 整理现有文件</button><button id="new-text-asset" class="ghost" type="button"><i class="bi bi-file-earmark-plus"></i> 新建文本</button></div>
+      <div id="asset-import-options" class="inline-editor"><label>导入为<select id="asset-import-kind"><option value="song">歌曲</option><option value="reference_voice">参考音色</option><option value="vocal">人声</option><option value="instrumental">伴奏</option><option value="midi">MIDI</option></select></label><span id="asset-import-status" class="meta">先选择类型，再点击“导入文件”；音频可提取 MIDI，MIDI 可直接编辑、试听和生成歌曲。</span></div>
+      <div class="cleanup-controls" aria-label="资产整理">
+        <label>查看<select id="asset-status"><option value="active">资产库</option><option value="trashed">回收站</option></select></label>
+        <label class="check"><input id="asset-select-page" type="checkbox">选择本页</label>
+        <span id="asset-selection-count" class="meta">已选 0 项</span>
+        <button id="asset-clear-selection" class="ghost compact" type="button" disabled>取消选择</button>
+        <button id="trash-selected-assets" class="ghost" type="button" disabled><i class="bi bi-trash" aria-hidden="true"></i> 移入回收站</button>
+        <button id="restore-selected-assets" class="ghost hidden" type="button" disabled>恢复所选</button>
+        <button id="purge-selected-assets" class="danger hidden" type="button" disabled>彻底删除所选</button>
+        <button id="empty-asset-trash" class="danger hidden" type="button">清空回收站</button>
+      </div>
+      <p id="asset-cleanup-status" class="meta cleanup-note" role="status">勾选不用的资产后移入回收站，可随时恢复。释放硬盘空间请进入回收站彻底删除；项目和训练的固定素材会受到保护。</p>
+      <form id="text-asset-form" class="inline-editor hidden"><label>类型<select name="kind"><option value="lyrics">歌词</option><option value="style">曲风</option><option value="score">ABC 乐谱</option></select></label><label>名称<input name="title" required maxlength="200"></label><label class="wide">内容<textarea name="text" rows="8" required></textarea></label><div class="toolbar wide"><button type="button" class="ghost" id="cancel-text-asset">取消</button><button class="primary" type="submit">保存到资产库</button></div></form>
+      <nav id="asset-pagination-top" class="asset-pagination asset-pagination-top" aria-label="资产库顶部分页"><button id="asset-prev-top" class="ghost compact" type="button">上一页</button><span id="asset-page-status-top" class="meta">第 1 页</span><button id="asset-next-top" class="ghost compact" type="button">下一页</button></nav>
+      <div id="asset-grid" class="asset-grid"><div class="empty-state"><i class="bi bi-collection-play"></i><b>正在读取资产库</b></div></div>
+      <nav class="asset-pagination" aria-label="资产库分页"><button id="asset-prev" class="ghost compact" type="button">上一页</button><span id="asset-page-status" class="meta">第 1 页</span><button id="asset-next" class="ghost compact" type="button">下一页</button></nav>
+    </section>
+
+    <section id="training" class="panel">
+      <div class="workspace-heading"><div><p class="eyebrow">MODEL TRAINING</p><h2>训练工作台</h2><p>YuE2 负责歌曲风格适配，RVC 负责专用演唱音色；两类模型各自训练和使用。</p></div><button id="training-refresh" class="ghost" type="button"><i class="bi bi-arrow-clockwise"></i> 刷新</button></div>
+      <div class="training-switch"><button class="active" type="button">YuE2 歌曲风格</button><button class="tab" data-tab="voices" type="button">RVC 演唱音色</button></div>
+      <section id="training-resource-card" class="training-resource"><div><span class="status-orb"></span><b>正在检查可选训练资源</b><p class="meta">第 4 版分词头、声学伴随模型和固定正则化数据，约 414 MB。</p></div><button id="install-training-resources" class="ghost hidden" type="button" disabled>安装训练资源</button></section>
+      <div class="training-layout">
+        <section class="training-main">
+          <div class="training-stage" aria-label="新建训练流程"><span class="active">1 选择素材</span><span>2 锁定素材</span><span>3 准备数据</span><span>4 训练与保存</span><span>5 试听效果</span></div>
+          <div class="result-card"><div class="canvas-head"><div><small>素材集</small><h3>为训练集和验证集选择不同歌曲</h3></div><div class="toolbar"><button id="training-add-songs" class="ghost compact" type="button"><i class="bi bi-plus-circle"></i> 添加歌曲</button><button id="training-select-all" class="ghost compact" type="button">选择全部</button></div></div><p id="training-assets-scope" class="meta">这里只显示当前项目中已加入且不少于 5 秒的完整歌曲或作品；同一首歌的衍生片段不会跨集合。YuE2 AR LoRA 适配歌曲风格，不复制歌手音色。</p><div id="training-assets" class="training-assets"></div><nav id="training-assets-pagination" class="asset-pagination hidden" aria-label="训练歌曲分页"><button id="training-assets-prev" class="ghost compact" type="button">上一页</button><span id="training-assets-page-status" class="meta">第 1 页</span><button id="training-assets-next" class="ghost compact" type="button">下一页</button></nav></div>
+          <div id="training-progress-card" class="result-card"><div class="canvas-head"><div><small>训练记录</small><h3 id="training-run-title">尚未创建训练</h3></div><span id="training-run-state" class="badge">待设置</span></div><div class="training-run-controls"><label>查看训练记录<select id="training-run-select"><option value="">尚无训练记录</option></select></label><label>试听检查点<select id="training-checkpoint-select" disabled><option value="">尚无检查点</option></select></label></div><div class="metric-row"><span><small>进度</small><b id="training-step">0 / 0 步</b></span><span><small>训练损失</small><b id="training-loss">—</b></span><span><small>验证损失</small><b id="training-val-loss">—</b></span></div><div class="progress-track"><span id="training-progress-bar"></span></div><canvas id="training-chart" width="760" height="150" aria-label="训练损失曲线"></canvas><p class="meta">曲线用于观察训练，最终以固定提示和种子的试听对比判断。</p><div class="toolbar"><button id="training-preview-checkpoint" class="ghost hidden" type="button">试听所选检查点</button><button id="training-pause" class="ghost hidden" type="button">安全暂停</button><button id="training-resume" class="primary hidden" type="button">继续训练</button></div></div>
+          <section id="training-model-library" class="result-card training-model-library"><div class="canvas-head"><div><small>模型管理</small><h3>训练完成的歌曲风格模型</h3></div><span id="training-model-count" class="badge">0 个</span></div><p class="meta">每页显示 3 个模型，可直接用于歌曲创作、下载备份或打开本地文件夹。</p><div id="training-model-manager" class="training-model-manager" aria-live="polite"></div><nav class="asset-pagination" aria-label="训练模型分页"><button id="training-model-prev" class="ghost compact" type="button">上一页</button><span id="training-model-page-status" class="meta">第 1 / 1 页</span><button id="training-model-next" class="ghost compact" type="button">下一页</button></nav></section>
+          <div id="training-result" class="results" aria-live="polite"></div>
+        </section>
+        <aside class="training-inspector"><h3>模型与使用</h3><form id="training-form" novalidate><label>训练名称<input name="title" value="我的歌曲风格" maxlength="160"></label><label>公共曲风<textarea name="style" rows="3" dir="ltr" placeholder="必填，例如：warm jazz, Rhodes piano, tight drums"></textarea></label><label>公共歌词（备用，可选）<textarea name="lyrics" rows="5" dir="ltr" placeholder="推荐在左侧为每首歌分别粘贴；这里只作为未单独填写歌曲的备用歌词"></textarea></label><label>训练方案<select id="training-preset"><option value="quick" selected>快速试训 · 200 步</option><option value="standard">标准 · 800 步</option><option value="quality">较长试训 · 1600 步</option><option value="custom">自定义</option></select></label><details><summary>高级训练参数</summary><label>LoRA 容量等级（rank）<select name="rank"><option selected>8</option><option>16</option><option>32</option><option>64</option></select></label><label>训练步数<input name="steps" type="number" min="1" max="100000" value="200"></label><label>梯度累积<input name="gradient_accumulation" type="number" min="1" max="32" value="1"></label><label>学习率<input name="learning_rate" type="number" min="0.000001" max="0.01" step="0.000001" value="0.00015"></label></details><label>歌曲风格强度<input id="training-style-scale" type="range" min="0" max="2" step="0.05" value="1"><output id="training-style-scale-value">1.00</output></label><label class="check rights-check"><input name="rights_confirmed" type="checkbox">我确认有权使用所选音乐进行模型训练</label><p class="meta">每首含人声歌曲应选择对应歌词；纯器乐必须逐首标记。配套第 4 版声学模型会自动关联；步数更多不代表效果一定更好，请以验证集和固定试听为准。</p><p id="training-form-status" class="training-form-status meta" role="status">填写公共曲风、逐首歌词并划分训练集与验证集后，再创建快照。</p><button id="create-training-run" class="primary full" type="submit">创建快照并预处理</button><button id="start-training" class="primary full" type="button" disabled>开始训练</button></form></aside>
+      </div>
+    </section>
+
+    <section id="create" class="panel">
       <div class="section-title"><div><span>01</span><h2>从歌词生成完整歌曲</h2></div><p>默认先规划旋律与和弦，再合成 48 kHz 双声道音频。</p></div>
       <div id="create-result" class="results" aria-live="polite"></div>
       <form id="create-form" class="grid-form">
@@ -103,13 +214,19 @@
 就让这首歌飞过长空
 所有没说完的话
 都留在这一秒的风中</textarea></label>
+        <p class="meta wide">勾选“纯器乐”后将忽略歌词并向模型明确要求无演唱；这是生成提示，仍可能出现类似人声的声音。</p>
         <label>规划模式<select name="cot"><option value="full">旋律 + 和弦</option><option value="melody">仅旋律</option><option value="off">直接生成</option></select></label>
         <label>随机种子<input name="seed" type="number" min="0" max="9007199254740991" step="1" value="831001"></label>
         <label>文本引导 CFG<input name="cfg_scale" type="number" min="0" max="20" step="0.01" value="1.0"></label>
         <label>候选数量<select name="candidates"><option>1</option><option>2</option><option>3</option><option>4</option></select></label>
+        <label>歌曲风格模型（可选）<select name="style_model_asset_id" data-style-model><option value="">使用原版 YuE2</option></select></label>
+        <label>歌曲风格强度<input name="style_model_scale" type="number" min="0" max="2" step="0.05" value="1"><small class="meta">0 为关闭，1 为训练原强度；建议先用 0.4–0.9 试听，过强时调低。</small></label>
         <details class="wide advanced"><summary>高级设置</summary><div class="advanced-grid">
-          <label>运行后端<select name="backend"><option value="torch-eager">兼容模式</option><option value="torch">CUDA Graph 加速</option></select></label>
-          <label>显存预算 GiB<input name="memory_budget_gib" type="number" step="0.5" min="12" max="24" value="23.5"></label>
+          <label>运行后端<select name="backend"><option value="torch-eager">兼容模式</option><option value="torch">GPU Graph 加速（实验）</option></select></label>
+          <label>显存预算 GiB<input name="memory_budget_gib" data-generation-memory type="number" step="any" min="2" required value="23.5"></label>
+        <label>模型加载方式<select name="model_loading" data-generation-loading><option value="auto">自动选择（小显存分批加载）</option><option value="cpu-offload">低显存 · CPU 分批加载</option><option value="gpu">全部载入显卡</option></select></label>
+        <p class="meta wide">三个创作页面同步并在当前浏览器记住。预算包含 2 GiB 预留，例如填 8 时进程最多分配约 6 GiB。自动选择在显卡或预算不超过 12 GiB 时使用 CPU 分批加载，速度较慢、占用内存更多；建议至少 32 GB 内存。此设置用于 YuE2 生成，不控制 RVC 训练或直接换声。</p>
+
           <label class="check"><input name="offload_ar" type="checkbox" checked>声学合成时释放闲置模型显存</label>
           <label>声学计算块<input name="nar_query_chunk_size" type="number" min="1" max="1024" step="1" value="256"></label>
           <label>声学后端<select name="nar_attention"><option value="sdpa">自动（显存保护）</option><option value="math">兼容模式</option><option value="cudnn">cuDNN</option></select></label>
@@ -130,18 +247,25 @@ For every dream we had before
 [Chorus]
 Come home across the midnight blue
 This melody still waits for you</textarea></label>
+        <p class="meta wide">勾选“纯器乐”后将忽略歌词并向模型明确要求无演唱；这是生成提示，仍可能出现类似人声的声音。</p>
         <label>规划模式<select name="cot"><option value="full">旋律 + 和弦</option><option value="melody">仅旋律</option></select></label>
         <label>随机种子<input name="seed" type="number" min="0" max="9007199254740991" step="1" value="831001"></label>
+        <label>显存预算 GiB<input name="memory_budget_gib" data-generation-memory type="number" step="any" min="2" required value="23.5"></label>
+        <label>模型加载方式<select name="model_loading" data-generation-loading><option value="auto">自动选择（小显存分批加载）</option><option value="cpu-offload">低显存 · CPU 分批加载</option><option value="gpu">全部载入显卡</option></select></label>
+        <p class="meta wide">三个创作页面同步并在当前浏览器记住。预算包含 2 GiB 预留，例如填 8 时进程最多分配约 6 GiB。自动选择在显卡或预算不超过 12 GiB 时使用 CPU 分批加载，速度较慢、占用内存更多；建议至少 32 GB 内存。此设置用于 YuE2 生成，不控制 RVC 训练或直接换声。</p>
+
         <button id="plan-button" class="primary wide" type="submit" data-idle-label="生成 ABC 计划">生成 ABC 计划</button>
       </form>
       <div id="plan-workbench" class="workbench hidden">
         <div class="workbench-head"><h3>ABC 文本预览</h3><span id="plan-badge" class="badge">未生成</span></div>
-        <textarea id="plan-abc" rows="20" spellcheck="false"></textarea>
+        <textarea id="plan-abc" rows="20" spellcheck="false" aria-label="ABC 乐谱文本"></textarea>
         <div class="toolbar">
-          <label class="check"><input id="plan-exact" type="checkbox" checked>精确恢复原计划（忽略文本框修改）</label>
+          <label class="check"><input id="plan-exact" type="checkbox" checked>精确恢复原计划（忽略文本框修改）</label><small class="meta">如需编辑下方 ABC，请先取消勾选；修改后会作为新版本重新生成。</small>
+          <button id="validate-plan-abc" type="button" class="ghost">校验当前 ABC</button>
           <button id="download-abc" class="ghost">下载 ABC</button>
           <button id="render-plan" class="primary" data-idle-label="渲染完整歌曲">渲染完整歌曲</button>
         </div>
+        <p id="plan-abc-status" class="meta" role="status" aria-live="polite"></p>
       </div>
     </section>
 
@@ -149,7 +273,7 @@ This melody still waits for you</textarea></label>
       <div class="section-title"><div><span>SS</span><h2>听见原曲，看见乐谱。</h2></div><p>SheetSage2 · 完整旋律、和弦、节拍、调性与段落</p></div>
       <form id="ss-form" class="ss-upload">
         <label class="ss-file">选择原曲<input id="ss-file" type="file" accept="audio/*" required><small>WAV / FLAC / MP3 / M4A / OGG / AAC · 保留原曲混音分析</small></label>
-        <div class="ss-options"><label>推理预设<select id="ss-preset"><option value="default">标准 · 全曲分析</option><option value="paper">论文复现 · 需要 FFmpeg 共享库</option></select></label><label>计算精度<select id="ss-dtype"><option value="bf16">BF16 · 默认</option><option value="fp32">FP32 · 对比验证</option></select></label><label>分析前 N 秒<input id="ss-max-seconds" type="number" min="0.1" step="any" placeholder="留空分析全曲"></label><button id="ss-submit" class="primary" data-idle-label="完整转谱" type="submit">完整转谱</button></div>
+        <div class="ss-options"><label>推理预设<select id="ss-preset"><option value="default">标准 · 全曲分析</option><option value="paper">论文复现 · 统一音频解码</option></select></label><label>计算精度<select id="ss-dtype"><option value="bf16">BF16 · 默认</option><option value="fp32">FP32 · 对比验证</option></select></label><label>分析前 N 秒<input id="ss-max-seconds" type="number" min="0.1" step="any" placeholder="留空分析全曲"></label><button id="ss-submit" class="primary" data-idle-label="完整转谱" type="submit">完整转谱</button></div>
       </form>
       <div class="ss-history-row"><label>转谱记录<select id="ss-history"><option value="">选择已完成的转谱</option></select></label><button id="ss-refresh" class="ghost" type="button">刷新记录</button><span id="ss-status" role="status" aria-live="polite">上传原曲后，可在同一时间轴上对照波形与音符。</span></div>
       <div id="ss-result" class="results"></div>
@@ -183,13 +307,59 @@ This melody still waits for you</textarea></label>
       </div>
     </section>
 
+    <section id="remix" class="panel">
+      <div class="section-title"><div><span>MX</span><h2>保留旋律，重新编曲</h2></div><p>从参考歌曲提取旋律与和弦，换歌词、流派、乐器和情绪，生成带演唱与伴奏的新版本。</p></div>
+      <div class="toolbar"><button class="ghost" type="button" onclick="midiOpenRemix()"><i class="bi bi-keyboard"></i> 打开 MIDI 编辑器</button><span class="meta">可先独立提取、试听和编辑，不用先生成歌曲。</span></div>
+      <div id="remix-result" class="results" aria-live="polite"></div>
+      <form id="remix-form" class="grid-form">
+        <label>旋律来源<select id="remix-source-mode" name="source_mode"><option value="audio">参考歌曲（推荐）</option><option value="midi">旋律与和弦 MIDI</option></select></label>
+        <label>生成时长<select name="duration_seconds"><option value="30" selected>30 秒试听</option><option value="60">60 秒</option><option value="120">2 分钟</option><option value="180">3 分钟</option><option value="300">5 分钟</option></select></label>
+        <div id="remix-audio-source" class="wide">
+          <div class="upload-box" id="remix-drop-zone">
+            <input id="remix-file" type="file" accept="audio/*,.m4a,.flac,.wav,.mp3,.ogg,.aac" aria-label="选择重新编曲的参考歌曲">
+            <b>选择参考歌曲</b><span>支持 WAV、FLAC、MP3、M4A、OGG、AAC；会提取旋律、和弦与鼓点，不会逐帧复制原录音。</span>
+          </div>
+          <div id="remix-preview" class="upload-preview hidden"><div class="upload-preview-head"><b>参考歌曲试听</b><button id="remix-replace" type="button" class="ghost">更换文件</button></div><audio controls preload="metadata" aria-label="重新编曲参考歌曲试听"></audio><p>先试听确认歌曲，再开始重新编曲。</p></div>
+        </div>
+        <div id="remix-midi-source" class="wide remix-midi-source hidden">
+          <label>旋律 MIDI<input id="remix-melody-midi" type="file" accept=".mid,.midi,audio/midi"></label>
+          <label>和弦 MIDI<input id="remix-chord-midi" type="file" accept=".mid,.midi,audio/midi"></label>
+          <label>鼓组 MIDI（可选）<input id="remix-drum-midi" type="file" accept=".mid,.midi,audio/midi"></label>
+        </div>
+        <label class="wide">新歌词<textarea name="lyrics" rows="12" required placeholder="按 [Verse] / [Chorus] / [Bridge] 分段，每行一句歌词"></textarea></label>
+        <label class="wide">曲风方式<select id="remix-style-mode" name="style_mode"><option value="reference" selected>不主动指定曲风（参考旋律重新生成）</option><option value="custom">指定曲风</option></select></label>
+        <p id="remix-style-hint" class="meta wide">不额外指定流派、乐器或情绪；参考歌曲提供旋律、和弦与鼓点条件，生成结果仍可能改变原编曲和音色。</p>
+        <label data-remix-style class="hidden">主题<input name="topic" dir="ltr" disabled placeholder="例如 Longing / 成长"></label>
+        <label data-remix-style class="hidden">流派<input name="genre" dir="ltr" disabled value="Mandarin pop" placeholder="例如 country, soul, rock"></label>
+        <label data-remix-style class="hidden">乐器<input name="instrument" dir="ltr" disabled value="piano, strings, drums" placeholder="例如 acoustic guitar, strings"></label>
+        <label data-remix-style class="hidden">情绪<input name="mood" dir="ltr" disabled value="warm, hopeful" placeholder="例如 hopeful, melancholic"></label>
+        <label>旋律移调（半音）<input name="semitone_shift" type="number" min="-12" max="12" step="1" value="0"></label>
+        <label>额外八度<select name="octave_shift"><option value="-2">降低 2 个八度</option><option value="-1">降低 1 个八度</option><option value="0" selected>保持原八度</option><option value="1">升高 1 个八度</option><option value="2">升高 2 个八度</option></select></label>
+        <p class="meta wide">跨性别音域可先尝试降低或升高 1 个八度；这里调整的是用于重新演唱的旋律条件。</p>
+        <details class="wide advanced"><summary>高级生成设置</summary><div class="advanced-grid">
+          <label>随机种子<input name="seed" type="number" min="0" max="9007199254740991" step="1" value="831001"></label>
+          <label>解码种子<input name="decode_seed" type="number" min="0" max="9007199254740991" step="1" value="831002"></label>
+          <label>曲风引导强度<input name="cfg_scale" type="number" min="0.1" max="5" step="0.05" value="1.5"></label>
+          <label>采样温度<input name="temperature" type="number" min="0.1" max="2" step="0.05" value="1"></label>
+          <label>Top-K<input name="topk" type="number" min="1" max="8191" step="1" value="250"></label>
+          <label>显存预算 GiB<input name="memory_budget_gib" data-generation-memory type="number" step="any" min="2" required value="23.5"></label>
+          <label>显存保护<select name="model_loading" data-generation-loading><option value="auto">自动（按可用显存调整）</option><option value="cpu-offload">低显存保护（单批次）</option><option value="gpu">标准双批次</option></select></label>
+          <p class="meta wide">MuLaCover 会按歌曲时长动态分配 KV 缓存；低显存保护会改用单批次并将 CFG 降为 1.0，以避免重新编曲时整首任务因峰值显存失败。</p>
+        </div></details>
+        <p id="remix-model-status" class="meta wide" role="status">正在检查 MuLaCover 模型…</p>
+        <button id="remix-button" class="primary wide" type="submit" data-idle-label="开始重新编曲">开始重新编曲</button>
+      </form>
+    </section>
+
     <section id="cover" class="panel">
-      <div class="section-title"><div><span>03</span><h2>旋律重制与参考音色翻唱</h2></div><p>先从原曲提取旋律，再选择只重制歌曲，或把新歌人声转换成参考音色。</p></div>
+      <div class="section-title"><div><span>03</span><h2>旋律重制与参考音色翻唱</h2></div><p>重新创作旋律，或为已有歌曲转换演唱音色。支持 Seed-VC 与 RVC 分别试听对比。</p></div>
       <div id="cover-result" class="results" aria-live="polite"></div>
+      <label>制作方式<select id="cover-mode"><option value="generate">提取旋律并重新生成歌曲</option><option value="direct">直接为已有歌曲换音色</option></select></label>
+      <p id="cover-mode-hint" class="meta"></p>
       <div class="upload-box" id="drop-zone">
-        <input id="cover-file" type="file" accept="audio/*">
+        <input id="cover-file" type="file" accept="audio/*" aria-label="选择需要处理的原曲音频">
         <b>选择 WAV、FLAC、MP3、M4A、OGG 或 AAC</b>
-        <span>这里的原曲只用于提取旋律，不会直接复制原唱音色；最大 1GB</span>
+        <span>上传原曲后可先试听，再按所选制作方式处理；最大 1GB</span>
       </div>
       <div id="cover-preview" class="upload-preview hidden">
         <div class="upload-preview-head"><b>原曲试听</b><button type="button" class="ghost" data-replace>更换文件</button></div>
@@ -198,22 +368,43 @@ This melody still waits for you</textarea></label>
       </div>
       <button id="transcribe-button" class="primary full" data-idle-label="上传并转谱" disabled>上传并转谱</button>
       <div id="cover-review" class="workbench hidden">
+        <div id="cover-generation-fields">
         <div class="workbench-head"><h3>第一步：核对旋律与歌词</h3><span class="badge">请先校对</span></div>
         <label>旋律 ABC<textarea id="cover-abc" rows="16" spellcheck="false"></textarea></label>
         <label>目标风格<textarea id="cover-style" rows="3">Jazz-funk, warm lead vocal, Rhodes piano, electric bass, tight drums</textarea></label>
         <label>歌词<textarea id="cover-lyrics" rows="10" placeholder="粘贴并按 [Verse] / [Chorus] 整理歌词"></textarea></label>
+        <label>显存预算 GiB<input name="memory_budget_gib" data-generation-memory type="number" step="any" min="2" required value="23.5"></label>
+        <label>模型加载方式<select name="model_loading" data-generation-loading><option value="auto">自动选择（小显存分批加载）</option><option value="cpu-offload">低显存 · CPU 分批加载</option><option value="gpu">全部载入显卡</option></select></label>
+        <p class="meta wide">三个创作页面同步并在当前浏览器记住。预算包含 2 GiB 预留，例如填 8 时进程最多分配约 6 GiB。自动选择在显卡或预算不超过 12 GiB 时使用 CPU 分批加载，速度较慢、占用内存更多；建议至少 32 GB 内存。此设置用于 YuE2 生成，不控制 RVC 训练或直接换声。</p>
+
         <label>随机种子<input id="cover-seed" type="number" min="0" max="9007199254740991" step="1" value="831001"></label>
+        </div>
         <div class="creation-options">
-          <article class="choice-card">
+          <article id="cover-regenerate-choice" class="choice-card">
             <span class="choice-step">方案 A</span>
             <h4>旋律重制</h4>
             <p>按核对后的旋律、歌词和目标风格重新生成，使用 YuE2 自己的人声音色。</p>
             <button id="generate-cover" class="ghost full" data-idle-label="生成旋律重制">生成旋律重制</button>
           </article>
           <article class="choice-card accent-card">
-            <span class="choice-step">方案 B · 参考音色</span>
+            <span class="choice-step">参考音色转换</span>
             <h4>用参考声音演唱</h4>
-            <p>先生成歌曲，再分离人声并转换音色，最后与伴奏重新混音。请只使用你有权使用的声音。</p>
+            <p id="cover-voice-hint">先生成歌曲，再分离人声并转换音色，最后与伴奏重新混音。</p>
+            <label>音色转换方式<select id="voice-backend"><option value="seed-vc">Seed-VC · 使用短参考声音</option><option value="rvc">RVC · 使用已训练音色</option><option value="compare">Seed-VC / RVC · 同曲对比</option></select></label>
+            <p id="voice-compare-hint" class="meta hidden">同一首歌曲分别转换两次，依次运行，共用分离后的人声与伴奏。请选择同一目标音色的参考声音和 RVC 模型；Seed-VC 与 RVC 可分别设置演唱音高。</p>
+            <div id="rvc-cover-settings" class="hidden">
+              <label>我的音色<select id="rvc-cover-model"></select></label>
+              <label>说话人<select id="rvc-cover-speaker"></select></label>
+              <p id="rvc-pitch-profile" class="meta">选择音色后查看训练音域。</p>
+              <div class="pitch-preset-card">
+                <label>RVC 演唱音高（半音）<input id="rvc-pitch-shift" type="number" min="-12" max="12" step="1" value="0" required></label>
+                <div class="toolbar"><button type="button" class="ghost compact" data-rvc-pitch="-12">女歌男唱 · 低八度</button><button type="button" class="ghost compact" data-rvc-pitch="0">保留原调</button><button type="button" class="ghost compact" data-rvc-pitch="12">男歌女唱 · 高八度</button></div>
+                <p id="rvc-pitch-summary" class="meta">保留原曲演唱音高。</p>
+              </div>
+              <div class="toolbar"><button id="rvc-cover-train" class="ghost compact" type="button">没有模型？去训练音色</button></div>
+              <div class="advanced-grid"><label>检索贴合度<input id="rvc-index-rate" type="number" min="0" max="1" step="0.05" value="0.75"></label><label>辅音保护<input id="rvc-protect" type="number" min="0" max="0.5" step="0.01" value="0.33"></label></div>
+              <p class="meta">检索贴合度并非越高越好。听到咬字异常或杂音时，可先关闭检索进行对照。</p><button id="rvc-disable-index" type="button" class="ghost compact">关闭检索，保留当前音高</button>
+            </div>
             <label class="mini-upload" id="reference-drop-zone">
               <input id="reference-file" type="file" accept="audio/*">
               <b>选择 1–30 秒清晰干声</b>
@@ -224,12 +415,16 @@ This melody still waits for you</textarea></label>
               <audio controls preload="metadata" aria-label="参考音色试听"></audio>
               <p data-preview-status role="status">可先试听，确认音色与录音内容。</p>
             </div>
+            <div id="seed-pitch-settings" class="pitch-preset-card">
+              <label>Seed-VC 演唱音高（半音）<input id="voice-shift" type="number" min="-12" max="12" step="1" value="0" required></label>
+              <div class="toolbar"><button type="button" class="ghost compact" data-seed-pitch="-12">女歌男唱 · 低八度</button><button type="button" class="ghost compact" data-seed-pitch="0">保留原调</button><button type="button" class="ghost compact" data-seed-pitch="12">男歌女唱 · 高八度</button></div>
+              <p id="seed-pitch-summary" class="meta">保留原曲演唱音高。</p>
+            </div>
             <details class="advanced voice-settings">
-              <summary>参考音色高级设置</summary>
+              <summary>音色转换高级设置</summary>
               <div class="advanced-grid">
                 <label>转换精度（步数）<input id="voice-steps" type="number" min="4" max="50" step="1" value="30"></label>
                 <label>音色贴合度<input id="voice-cfg" type="number" min="0" max="1.5" step="0.05" value="0.7"></label>
-                <label>整体移调（半音）<input id="voice-shift" type="number" min="-12" max="12" step="1" value="0"></label>
                 <label>人声音量 dB<input id="voice-gain" type="number" min="-18" max="12" step="0.5" value="0"></label>
                 <label>伴奏音量 dB<input id="backing-gain" type="number" min="-18" max="12" step="0.5" value="0"></label>
                 <label class="check"><input id="voice-auto-f0" type="checkbox">自动匹配参考音域</label>
@@ -242,16 +437,79 @@ This melody still waits for you</textarea></label>
       <div id="cover-intermediate" class="results"></div>
     </section>
 
+    <section id="voices" class="panel">
+      <div class="section-title"><div><span>RVC</span><h2>训练属于你的演唱音色</h2></div><p>导入素材、试听筛选、训练模型，再发送到翻唱区。训练与歌曲生成共用任务队列。</p></div>
+      <details id="rvc-storage" class="result-card"><summary>素材、训练缓存与音色库位置</summary>
+        <div class="grid two"><label>训练项目与缓存<input id="rvc-directory-projects" placeholder="留空使用整合包默认目录"></label><label>训练素材<input id="rvc-directory-datasets" placeholder="留空使用整合包默认目录"></label><label>用户音色库<input id="rvc-directory-voices" placeholder="留空使用整合包默认目录"></label></div>
+        <p class="meta">选择空文件夹。迁移会复制并校验文件，成功后切换目录；原目录保留为备份，确认新位置可用后可自行清理。中途取消可继续迁移。</p>
+        <div class="toolbar"><button id="rvc-storage-preview" class="ghost">预览迁移</button><button id="rvc-storage-apply" class="primary" disabled>开始迁移并切换</button></div>
+        <div id="rvc-storage-plan" class="meta" aria-live="polite"></div>
+      </details>
+      <div class="result-card">
+        <div class="grid two"><label>训练项目<select id="rvc-project"></select></label><label>新项目名称<input id="rvc-new-name" placeholder="例如：我的流行演唱音色"></label></div>
+        <div class="toolbar"><button id="rvc-create" class="ghost">新建训练项目</button><button id="rvc-refresh" class="ghost">刷新</button><button id="rvc-open" class="ghost">打开训练目录</button></div>
+      </div>
+      <div id="rvc-workbench" class="hidden">
+        <div class="result-card">
+          <h3>1. 导入与试听素材</h3>
+          <p class="meta">推荐 10–50 分钟干净、音色一致的素材。每段都可试听；含伴奏的歌曲请先分离人声，再确认是否用于训练。</p>
+          <div class="grid two"><label>选择多个音频<input id="rvc-files" type="file" accept="audio/*,.m4a,.flac,.wav,.mp3" multiple></label><label>或导入整个文件夹<input id="rvc-folder" placeholder="填写本机音频文件夹路径"></label></div>
+          <div class="grid two"><label>这些素材属于<select id="rvc-import-speaker"></select></label><label>素材类型<select id="rvc-source-type"><option value="unknown">待试听确认</option><option value="dry">已准备好纯人声</option><option value="mix">含伴奏的歌曲</option></select></label></div>
+          <div class="toolbar"><button id="rvc-import" class="primary">导入素材</button><button id="rvc-separate" class="ghost">分离选中素材 / 检查伴奏</button></div>
+          <p id="rvc-duration" class="meta"></p>
+          <div id="rvc-materials"></div>
+        </div>
+        <div class="result-card">
+          <h3>2. 训练设置</h3>
+          <div class="grid two"><label>训练轮数<input id="rvc-epochs" type="number" min="1" max="2000" value="100"></label><label>批次大小（0 为自动）<input id="rvc-batch" type="number" min="0" max="32" value="0"></label></div>
+          <details><summary>高级训练设置与说话人</summary>
+            <div class="grid two"><label>模型版本<select id="rvc-version"><option value="v2">RVC v2</option><option value="v1">RVC v1</option></select></label><label>采样率<select id="rvc-rate"><option value="48k">48 kHz</option><option value="40k">40 kHz</option><option value="32k">32 kHz</option></select></label><label>音高提取<select id="rvc-f0"><option value="rmvpe">RMVPE</option><option value="pm">Parselmouth</option></select></label><label>每隔多少轮保存<input id="rvc-save" type="number" min="1" max="100" value="5"></label><label>GPU 编号<input id="rvc-gpu" type="number" min="0" max="31" value="0"></label><label>数据加载进程数<input id="rvc-workers" type="number" min="0" max="4" value="0"></label></div>
+            <div id="rvc-speakers" class="meta"></div>
+            <div class="grid two"><label>新说话人 ID<input id="rvc-speaker-id" type="number" min="0" max="109" value="1"></label><label>新说话人名称<input id="rvc-speaker-name" placeholder="例如：第二位演唱者"></label></div><button id="rvc-add-speaker" class="ghost">添加说话人</button>
+          </details>
+          <p class="meta">步骤：素材预处理 → 音高 → HuBERT 特征 → 训练 → 检索索引 → 音色库。更换素材或模型结构时请新建项目；取消后会保留已保存的阶段和检查点。</p>
+          <div class="toolbar"><button id="rvc-check-training" class="ghost">检查训练条件</button><button id="rvc-train" class="primary">开始 / 继续训练</button><button id="rvc-cancel" class="danger hidden">取消音色任务</button></div>
+          <p id="rvc-preflight" class="meta" aria-live="polite">训练前会检查素材确认、底模和剩余空间；显存与内存以检查时为准。</p>
+        </div>
+      </div>
+      <div id="rvc-result" class="results" aria-live="polite"></div>
+      <div id="rvc-job-tools" class="hidden">
+        <div class="toolbar"><button id="rvc-show-log" class="ghost compact">查看训练日志</button><button id="rvc-resume" class="ghost compact hidden">从已保存阶段继续</button></div>
+        <pre id="rvc-job-log" class="job-log hidden"></pre>
+      </div>
+      <div class="section-title"><h2>我的音色</h2><p>训练完成后会自动加入这里，用户音色与训练资料会在软件更新时保留。</p></div>
+      <details class="workbench">
+        <summary>导入已有 RVC 音色</summary>
+        <p class="meta">选择本软件导出的 ZIP，或一个推理 PTH 和对应 INDEX。训练中的 G / D 检查点不能直接导入。</p>
+        <div class="grid two">
+          <label>音色名称（选填）<input id="rvc-model-name" maxlength="100" placeholder="例如：我的演唱音色"></label>
+          <label>模型文件<input id="rvc-model-files" type="file" multiple accept=".zip,.pth,.index"></label>
+        </div>
+        <label>多说话人 index 映射（选填）<textarea id="rvc-model-indices" rows="2" placeholder='单说话人留空；多说话人填写 {"0":"小明.index","1":"小红.index"}'></textarea></label>
+        <button id="rvc-model-import" class="ghost">检查并导入音色</button>
+      </details>
+      <div id="rvc-library"></div>
+    </section>
+
     <section id="assistant" class="panel">
       <div class="section-title"><div><span>AI</span><h2>从一个想法开始写歌</h2></div><p>先创作歌词与曲风，也可以让 LLM 作谱。编辑满意后，发送到对应页面制作音乐。</p></div>
-      <details id="assistant-settings" class="workbench" open>
-        <summary>创作渠道与模型 <span id="assistant-capability" class="meta"></span></summary>
+      <div id="assistant-channel-status" class="assistant-channel-status" data-state="loading" role="status" aria-live="polite">
+        <span class="assistant-channel-dot" aria-hidden="true"></span>
+        <div class="assistant-channel-copy"><strong id="assistant-channel-title">正在检查 AI 创作渠道</strong><p id="assistant-channel-detail">请稍候，正在读取当前模型与凭据状态。</p></div>
+        <div class="assistant-channel-actions">
+          <button id="assistant-open-settings" class="primary compact" type="button">设置 API Key</button>
+          <a id="assistant-status-signup" class="ghost compact hidden" target="_blank" rel="noopener noreferrer">获取 API Key</a>
+        </div>
+      </div>
+      <details id="assistant-settings" class="workbench">
+        <summary>AI 渠道与 API Key <span id="assistant-capability" class="meta"></span></summary>
         <form id="assistant-config-form" class="grid-form assistant-settings-grid">
           <label>渠道<select name="provider" id="assistant-provider"></select></label>
-          <label>API 模型名 / GGUF 文件<input name="model" id="assistant-model" list="assistant-models" autocomplete="off" placeholder="填写渠道模型名，或选择已有 GGUF"></label>
+          <label>模型选择<select id="assistant-model-choice" aria-label="模型选择"></select></label>
+          <label id="assistant-custom-model-field" class="hidden">自定义模型 ID<input name="model" id="assistant-model" list="assistant-models" autocomplete="off" placeholder="填写完整模型 ID"></label>
           <datalist id="assistant-models"></datalist>
           <div class="assistant-provider-actions wide">
-            <button type="button" id="assistant-refresh-models" class="ghost compact">获取模型 LIST</button>
+            <button type="button" id="assistant-refresh-models" class="ghost compact">获取模型列表</button>
             <a id="assistant-signup" class="ghost compact" target="_blank" rel="noopener noreferrer"></a>
             <span id="assistant-model-list-status" class="meta" role="status"></span>
           </div>
@@ -259,17 +517,17 @@ This melody still waits for you</textarea></label>
           <label data-api-config>API Key<input id="assistant-key" type="password" autocomplete="new-password" placeholder="已保存的密钥不回显"></label>
           <div data-api-config><label class="check"><input id="assistant-remember-key" type="checkbox">在本机记住密钥</label><button type="button" id="assistant-delete-key" class="ghost compact">删除已保存凭据</button></div>
           <label class="wide" data-local-config>本地 GGUF 目录（可选）<input name="llm_directory" placeholder="留空使用模型根目录下的 LLM 文件夹"></label>
-          <label>每次输出 Token 上限<input name="max_tokens" type="number" min="64" max="32768" value="4096"></label>
-          <label data-local-config>上下文长度<input name="context_size" type="number" min="512" max="131072" value="16384"></label>
+          <label>每次输出 Token 上限<input name="max_tokens" type="number" min="64" max="262144" value="32768"></label>
+          <label data-local-config>上下文长度<input name="context_size" type="number" min="512" max="262144" value="16384"></label>
           <label data-local-config>GPU 层数（0 为 CPU，-1 为全部）<input name="gpu_layers" type="number" min="-1" max="200" value="24"></label>
           <label data-local-config>CPU 线程<input name="threads" type="number" min="1" max="64" value="4"></label>
           <label data-local-config class="check"><input name="think" type="checkbox">启用模型思考（占用输出额度）</label>
           <label data-api-config>温度参数<select name="temperature_policy"><option value="auto">自动</option><option value="send">发送</option><option value="omit">省略</option></select></label>
           <label data-api-config class="check"><input name="stream" type="checkbox" checked>接收流式响应</label>
           <label class="wide" data-api-config>可选渠道参数 JSON<textarea id="assistant-extra" rows="2" spellcheck="false">{}</textarea></label>
-          <p class="meta wide" data-api-config>使用 API 无需下载本地 LLM，也无需设置本地模型目录。</p>
+          <p class="meta wide" data-api-config>使用 API 无需下载本地 LLM，也无需设置本地模型目录。输出上限最高可填 262144（含 220K）；实际可用值仍由所选模型和渠道决定，数值越大可能产生更多费用。</p>
           <p class="meta wide" data-local-config><a href="https://pan.quark.cn/s/55eab3bb2d9b" target="_blank" rel="noopener noreferrer">下载本地 LLM 模型（可选）</a>，解压后填写存放 GGUF 的目录，再选择模型文件；无需视觉投影模型。若尚未安装环境，请在整合包运行“安装本地LLM.bat”。本地模型任务与音乐任务串行，结束后释放模型。</p>
-          <div class="toolbar wide"><button class="ghost" type="submit">保存设置 / 刷新模型</button><button class="ghost" type="button" id="assistant-test">测试模型连接</button><span id="assistant-config-status" class="meta" role="status"></span></div>
+          <div class="toolbar wide"><button class="ghost" type="submit" id="assistant-save-config">保存设置 / 刷新模型</button><button class="ghost" type="button" id="assistant-test" title="测试当前选定模型的聊天连接，可能产生 API 费用">测试模型连接</button><span id="assistant-config-status" class="meta" role="status"></span></div>
         </form>
       </details>
       <form id="assistant-form" class="grid-form">
@@ -289,16 +547,15 @@ This melody still waits for you</textarea></label>
         <p id="assistant-result-note" class="meta"></p>
         <label>曲风<textarea id="assistant-result-style" rows="3"></textarea></label>
         <label>歌词<textarea id="assistant-result-lyrics" rows="10"></textarea></label>
-        <label>ABC 乐谱<textarea id="assistant-result-abc" rows="10" spellcheck="false"></textarea></label>
-        <p id="assistant-abc-status" class="meta" role="status"></p>
-        <div class="toolbar"><button type="button" id="assistant-validate" class="ghost">校验当前 ABC</button><button type="button" id="assistant-download" class="ghost">下载文本与请求 JSON</button><button type="button" id="assistant-download-abc" class="ghost">下载 ABC</button><button type="button" id="assistant-copy" class="ghost">复制歌词与曲风</button></div>
+        <label>ABC 乐谱<span id="assistant-abc-status" class="assistant-abc-status" role="status"></span><textarea id="assistant-result-abc" rows="10" spellcheck="false"></textarea></label>
+        <div class="toolbar"><button type="button" id="assistant-compose-abc" class="primary hidden">补写 ABC</button><button type="button" id="assistant-validate" class="ghost">校验当前 ABC</button><button type="button" id="assistant-download" class="ghost">下载文本与请求 JSON</button><button type="button" id="assistant-download-abc" class="ghost">下载 ABC</button><button type="button" id="assistant-copy" class="ghost">复制歌词与曲风</button></div>
         <div class="assistant-send toolbar"><button type="button" class="primary" data-assistant-send="create">发送到歌曲创作</button><button type="button" class="primary" data-assistant-send="plan">发送到乐谱计划</button><button type="button" class="primary" data-assistant-send="cover">发送到旋律重制</button></div>
         <div class="toolbar"><label>单独重试<select id="assistant-retry-stage"><option value="">失败步骤（复用已有结果）</option><option value="lyrics">歌词及其后续内容</option><option value="style">曲风及其后续内容</option><option value="review">审校与作谱</option><option value="abc">仅作谱</option></select></label><button type="button" id="assistant-retry" class="ghost">继续创作</button></div>
         <details><summary>创作报告与来源</summary><pre id="assistant-report" class="meta"></pre></details>
       </div>
     </section>
 
-    <dialog id="assistant-send-dialog">
+    <dialog id="assistant-send-dialog" aria-labelledby="assistant-send-title">
       <form method="dialog"><h3 id="assistant-send-title">发送创作内容</h3><p id="assistant-send-warning"></p>
         <div class="toolbar"><label class="check"><input type="checkbox" name="style" checked>曲风</label><label class="check"><input type="checkbox" name="lyrics" checked>歌词</label><label class="check"><input type="checkbox" name="abc">ABC 乐谱</label></div>
         <label id="assistant-send-mode-label">接收的谱面模式<select id="assistant-send-mode"><option value="">请选择</option><option value="full">旋律 + 和弦</option><option value="melody">仅旋律</option></select></label>
@@ -309,13 +566,30 @@ This melody still waits for you</textarea></label>
 
     <section id="history" class="panel">
       <div class="section-title"><div><span>04</span><h2>任务与版本</h2></div><p>失败、取消和截断结果都会保留，便于定位问题与继续编辑。</p></div>
-      <div class="toolbar"><button id="refresh-history" class="ghost">刷新</button><button class="ghost" type="button" onclick="openDirectory('logs')">打开日志目录</button><button class="ghost" type="button" onclick="openDirectory('outputs')">打开输出目录</button><button id="cleanup-storage" class="ghost">按策略清理</button><span id="storage-usage" class="meta"></span><button id="cancel-active" class="danger">取消当前任务</button></div>
+      <div class="asset-controls"><label>状态<select id="history-status"><option value="">全部状态</option><option value="complete">已完成</option><option value="failed">失败</option><option value="cancelled">已取消</option><option value="paused">已暂停</option><option value="running">运行中</option><option value="queued">排队中</option></select></label><label>类型<select id="history-kind"><option value="">全部类型</option><option value="generate">歌曲生成</option><option value="plan">乐谱计划</option><option value="render_plan">乐谱渲染</option><option value="mulacover_remix">MuLaCover 重新编曲</option><option value="midi_extract">音乐提取 MIDI</option><option value="transcribe">音频转谱</option><option value="reference_cover">参考音色翻唱</option><option value="voice_convert">音色转换</option><option value="assistant">AI 创作助手</option><option value="rvc_train">RVC 训练</option><option value="yue2_train">YuE2 训练</option><option value="yue2_preview">训练试听</option></select></label><label>项目<select id="history-project"><option value="">全部项目</option><option value="__global__">未归档 / 全局</option></select></label><label class="asset-search"><i class="bi bi-search"></i><input id="history-query" type="search" placeholder="搜索任务名称、ID 或错误" aria-label="搜索任务名称、ID 或错误"></label></div>
+      <div class="toolbar"><button id="refresh-history" class="ghost">刷新</button><button class="ghost" type="button" onclick="openDirectory('logs')">打开日志目录</button><button class="ghost" type="button" onclick="openDirectory('outputs')">打开输出目录</button><button id="cleanup-storage" class="ghost">按策略清理</button><span id="storage-usage" class="meta"></span><span id="memory-status" class="meta" role="status">显存状态读取中…</span><button id="free-memory" class="ghost" type="button" title="清空当前服务进程的 CUDA 缓存，不删除任务或文件">清理显存（不删文件）</button><button id="cancel-active" class="danger" disabled title="当前没有正在执行的任务">取消当前任务</button></div>
+      <div class="cleanup-controls" aria-label="任务记录整理">
+        <label class="check"><input id="history-select-page" type="checkbox">选择本页已结束任务</label>
+        <span id="history-selection-count" class="meta">已选 0 项</span>
+        <button id="history-clear-selection" class="ghost compact" type="button" disabled>取消选择</button>
+        <button id="cleanup-selected-jobs" class="danger" type="button" disabled>清理所选任务</button>
+        <button id="cleanup-failed-jobs" class="ghost" type="button">清理失败 / 取消任务</button>
+      </div>
+      <p id="history-cleanup-status" class="meta cleanup-note" role="status">按项目、类型或名称筛选后可跨页勾选清理；删除前会显示数量与空间。正在运行、暂停或被草稿使用的任务会保留。资产库与已导出的文件独立保存。</p>
       <div id="history-list" class="history-list"></div>
+      <nav class="asset-pagination" aria-label="历史任务分页"><button id="history-prev" class="ghost compact" type="button">上一页</button><span id="history-page-status" class="meta">第 1 页</span><button id="history-next" class="ghost compact" type="button">下一页</button></nav>
     </section>
   </main>
 
+  <div id="global-player" class="global-player hidden"><div><small id="global-player-kind">正在试听</small><b id="global-player-title">未选择音频</b></div><audio id="global-audio" controls preload="metadata" aria-labelledby="global-player-title"></audio><button id="global-player-close" class="ghost compact" type="button" aria-label="关闭播放器"><i class="bi bi-x-lg"></i></button></div>
+
   <footer>YuE2 本地整合包 · 制作者 By B站UP主：T8star-Aix · 仅绑定 127.0.0.1 · 权重与输出保存在本机</footer>
   <script src="/static/app.js"></script>
+  <script src="/static/mulacover.js"></script>
+  <script src="/static/rvc.js"></script>
+  <script src="/static/workbench.js"></script>
+  <script src="/static/midi_editor.js"></script>
+  <script src="/static/training_cleanup.js"></script>
   <script src="/static/assistant.js"></script>
   <script src="/static/transcription-audio.js"></script>
   <script src="/static/transcription-harmony.js"></script>

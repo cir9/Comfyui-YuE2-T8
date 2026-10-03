@@ -9,7 +9,7 @@ from array import array
 from pathlib import Path
 
 from app.yue2_app.config import ROOT
-from app.yue2_app.service import Handler
+from app.yue2_app.workbench_api import stream_file
 from app.yue2_app.transcription_data import (
     interval_data, prepare_audio, timeline_data, validate_transcription_request,
 )
@@ -86,7 +86,7 @@ class TranscriptionTests(unittest.TestCase):
                     ("bytes=0-1,3-4", 416, b"")]:
                 with self.subTest(requested=requested), path.open('rb') as stream:
                     response = Response(requested)
-                    Handler._stream_artifact(response, path, stream)
+                    stream_file(response, path, {"blob_sha256": "test", "mime": "audio/flac"})
                     self.assertEqual(response.code, status)
                     self.assertEqual(response.wfile.getvalue(), content)
                     self.assertEqual(response.response_headers["Content-Length"], str(len(content)))

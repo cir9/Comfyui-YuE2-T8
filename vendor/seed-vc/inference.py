@@ -58,7 +58,10 @@ def load_models(args):
         from modules.rmvpe import RMVPE
 
         model_path = load_custom_model_from_hf("lj1995/VoiceConversionWebUI", "rmvpe.pt", None)
-        f0_extractor = RMVPE(model_path, is_half=False, device=device)
+        # RMVPE's fp32 BatchNorm triggers the same MIOpen HIPRTC JIT compile as
+        # CAMPPlus (see the note below). RMVPE supports half natively, so follow
+        # the caller's precision instead of pinning fp32.
+        f0_extractor = RMVPE(model_path, is_half=bool(fp16), device=device)
         f0_fn = f0_extractor.infer_from_audio
 
     config = yaml.safe_load(open(dit_config_path, "r"))
@@ -101,6 +104,16 @@ def load_models(args):
     campplus_model.load_state_dict(torch.load(campplus_ckpt_path, map_location="cpu"))
     campplus_model.eval()
     campplus_model.to(device)
+    # CAMPPlus is the only model in this function that would stay fp32 while every
+    # other one follows args.fp16. Beyond the inconsistency, its fp32 BatchNorm
+    # makes MIOpen JIT-compile MIOpenBatchNormFwdInferSpatial through HIPRTC on the
+    # first encoder call, which fails on ROCm wheels shipped without libc++ headers
+    # for comgr:
+    #   fatal error: 'type_traits' file not found -> miopenStatusUnknownError
+    # fp16 selects a precompiled batchnorm kernel instead, so follow args.fp16 like
+    # the rest of the ensemble.
+    if fp16:
+        campplus_model.half()
 
     vocoder_type = model_params.vocoder.type
 
@@ -329,7 +342,9 @@ def main(args):
                                               dither=0,
                                               sample_frequency=16000)
     feat2 = feat2 - feat2.mean(dim=0, keepdim=True)
-    style2 = campplus_model(feat2.unsqueeze(0))
+    # kaldi.fbank returns fp32; match the encoder's dtype (see the CAMPPlus note
+    # in load_models -- with fp16 weights a fp32 input raises a dtype mismatch).
+    style2 = campplus_model(feat2.unsqueeze(0).half() if fp16 else feat2.unsqueeze(0))
 
     if f0_condition:
         F0_ori = f0_fn(ori_waves_16k[0], thred=0.03)
@@ -419,7 +434,11 @@ def main(args):
     source_name = os.path.basename(source).split(".")[0]
     target_name = os.path.basename(target_name).split(".")[0]
     os.makedirs(args.output, exist_ok=True)
-    torchaudio.save(os.path.join(args.output, f"vc_{source_name}_{target_name}_{length_adjust}_{diffusion_steps}_{inference_cfg_rate}.wav"), vc_wave.cpu(), sr)
+    # SoundFile keeps offline WAV output independent of TorchAudio's TorchCodec
+    # backend (TorchAudio 2.9+). Preserve [channels, samples] and PCM16 output.
+    import soundfile as sf
+    sf.write(os.path.join(args.output, f"vc_{source_name}_{target_name}_{length_adjust}_{diffusion_steps}_{inference_cfg_rate}.wav"),
+             vc_wave.detach().float().cpu().numpy().T, sr, subtype="PCM_16")
 
 
 if __name__ == "__main__":

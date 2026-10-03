@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,6 +7,7 @@ from unittest.mock import Mock, patch
 
 from app.yue2_app import assistant_data as data
 from app.yue2_app.assistant_rules import engine
+from app.yue2_app.assistant_rules import yue2_abc
 from app.yue2_app.assistant_worker import Runner, execute
 from app.yue2_app.worker_common import JobContext
 
@@ -17,7 +19,7 @@ class AssistantTests(unittest.TestCase):
         self.root = Path(self.temp.name)
 
     def request(self, **values):
-        return data.normalize_request(self.root, {"values": {"music_idea": "A warm song about home", "lyrics_language": "English", **values},
+        return data.normalize_request(self.root, {"values": {"music_idea": "A warm song about home", "lyrics_language": "English", "abc_source": engine.ABC_DOWNSTREAM, **values},
             "config": {"provider": "compatible", "base_url": "http://127.0.0.1:9999/v1", "model": "fixture"}})
 
     def context(self, number=1):
@@ -25,6 +27,28 @@ class AssistantTests(unittest.TestCase):
         path.mkdir(parents=True)
         (path / "status.json").write_text(json.dumps({"id": path.name, "kind": "assistant", "status": "running"}))
         return JobContext(path)
+
+    def test_abc_voice_marker_error_reports_line_actual_text_and_group(self):
+        abc = """X:1
+T:
+M:4/4
+L:1/32
+Q:1/4=120
+V: Vocal clef=treble name=\"Vocal Melody\" snm=\"Vocal\"
+V: Ins clef=treble name=\"Ins Melody\" snm=\"Inst.\"
+K:C
+V: Vocal
+C8 C8 C8 C8|
+V:Ins
+C8 C8 C8 C8|"""
+        with self.assertRaises(yue2_abc.AbcError) as caught:
+            yue2_abc.parse_abc(abc)
+        message = str(caught.exception)
+        self.assertIn("group 1, Ins", message)
+        self.assertIn("第 11 行", message)
+        self.assertIn("'V: Ins'", message)
+        self.assertIn("'V:Ins'", message)
+        self.assertIn("冒号后必须保留一个空格", message)
 
     def test_official_snapshot_and_no_comfy_import(self):
         self.assertEqual(engine.official_snapshot()["commit"], engine.SOURCE_COMMIT)
@@ -122,12 +146,32 @@ class AssistantTests(unittest.TestCase):
         result = execute(self.root, ctx, request, transport=transport)
         self.assertEqual(result["outcome"], "partial_success")
         self.assertTrue(result["style"])
-        self.assertEqual(result["abc"], "")
+        self.assertEqual(result["abc"], "bad score")
+        self.assertEqual(result["abc_status"], "failed")
+        self.assertTrue(result["report"]["abc"]["retained_invalid"])
+        self.assertNotIn("abc", result["request"])
         self.assertEqual(calls, ["style", "abc", "abc_repair"])
         calls.clear()
         request["resume_from"] = str(ctx.job_dir)
         execute(self.root, self.context(2), request, transport=transport)
         self.assertEqual(calls, ["abc", "abc_repair"])
+
+    def test_failed_repair_keeps_the_first_paid_abc_response(self):
+        request = self.request(lyrics="[Verse]\nCome home to me", lyrics_mode=engine.PRESERVE,
+                               abc_source=engine.ABC_GENERATE)
+        calls = []
+        def transport(stage, *args):
+            calls.append(stage)
+            if stage == "style":
+                return {"style": "English folk, warm guitar"}
+            if stage == "abc":
+                return {"abc": "X:1\npaid but invalid"}
+            raise engine.YuE2PromptError("repair request failed")
+        result = execute(self.root, self.context(), request, transport=transport)
+        self.assertEqual(calls, ["style", "abc", "abc_repair"])
+        self.assertEqual(result["abc"], "X:1\npaid but invalid")
+        self.assertEqual(result["abc_status"], "failed")
+        self.assertTrue(result["report"]["abc"]["retained_invalid"])
 
     def test_style_failure_keeps_valid_lyrics_and_resume_reuses_lyrics(self):
         request, ctx, calls = self.request(lyrics_mode=engine.GENERATE), self.context(), []
@@ -241,7 +285,7 @@ class AssistantTests(unittest.TestCase):
             self.assertEqual(data.endpoint({"provider": "compatible", "base_url": base}), "https://example.com/v1/chat/completions")
 
     def test_provider_defaults_signup_links_and_model_list_routes_match_reference_node(self):
-        self.assertEqual(data.PROVIDERS["seedance"]["default_model"], "bytedance/doubao-seed-evolving")
+        self.assertEqual(data.PROVIDERS["seedance"]["default_model"], "bytedance/doubao-seed-2.1-turbo")
         self.assertEqual(data.PROVIDERS["workshop"]["default_model"], "gemini-3.5-flash")
         self.assertEqual(data.PROVIDERS["seedance"]["signup_url"], "https://api.seedance.nz/sign-up?aff=5f4w")
         self.assertEqual(data.PROVIDERS["workshop"]["signup_url"], "https://ai.t8star.org/register?aff=dP7j")
@@ -250,6 +294,24 @@ class AssistantTests(unittest.TestCase):
         self.assertEqual(data.models_endpoint({"provider": "compatible", "base_url": "https://example.com/api/v3"}),
                          "https://example.com/api/v3/models")
         self.assertEqual(data.normalize_config({"provider": "workshop", "model": ""})["model"], "gemini-3.5-flash")
+
+    def test_cloud_output_budget_defaults_to_32k_and_accepts_220k(self):
+        self.assertEqual(data.DEFAULT_CONFIG["max_tokens"], 32768)
+        config = data.normalize_config({"provider": "seedance", "max_tokens": 220000})
+        self.assertEqual(config["max_tokens"], 220000)
+        with self.assertRaisesRegex(ValueError, "64–262144"):
+            data.normalize_config({"provider": "seedance", "max_tokens": 262145})
+        with self.assertRaisesRegex(ValueError, "必须小于上下文"):
+            data.normalize_config({"provider": "local", "model": "fixture.gguf",
+                                   "max_tokens": 220000, "context_size": 220000})
+
+    def test_new_assistant_defaults_generate_abc_and_migrate_the_old_seedance_default(self):
+        self.assertEqual(engine.DEFAULTS["abc_source"], engine.ABC_GENERATE)
+        config = self.root / "userdata/assistant/config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({**data.DEFAULT_CONFIG, "model": data.LEGACY_SEEDANCE_DEFAULT_MODEL}), encoding="utf-8")
+        info = data.config_info(self.root)
+        self.assertEqual(info["config"]["model"], "bytedance/doubao-seed-2.1-turbo")
 
     def test_remote_model_list_is_bounded_deduplicated_and_does_not_follow_redirects(self):
         response = Mock(status_code=200)
@@ -307,6 +369,39 @@ class AssistantTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "凭据"):
             data.save_draft(self.root, {"panel": "create", "revision": 0, "draft": {"api_key": "dummy"}})
 
+    def test_drafts_are_isolated_by_project(self):
+        project_a, project_b = "a" * 32, "b" * 32
+        saved = data.save_draft(self.root, {"panel": "create", "project_id": project_a,
+                                            "revision": 0, "draft": {"form": {"lyrics": "A"}}})
+        self.assertEqual(saved["project_id"], project_a)
+        self.assertEqual(data.drafts(self.root, project_a)["create"]["draft"]["form"]["lyrics"], "A")
+        self.assertEqual(data.drafts(self.root, project_b)["create"]["draft"], {})
+        self.assertEqual(data.drafts(self.root)["create"]["draft"], {})
+        with self.assertRaisesRegex(ValueError, "项目 ID"):
+            data.save_draft(self.root, {"panel": "create", "project_id": "../escape",
+                                        "revision": 0, "draft": {}})
+
+    def test_legacy_assistant_draft_migrates_old_downstream_default_once(self):
+        saved = data.save_draft(self.root, {"panel": "assistant", "revision": 0, "draft": {
+            "values": {"abc_source": engine.ABC_DOWNSTREAM}}})
+        migrated = data.drafts(self.root)["assistant"]
+        self.assertEqual(migrated["draft"]["values"]["abc_source"], engine.ABC_GENERATE)
+        self.assertEqual(migrated["draft"]["defaults_version"], 2)
+        self.assertEqual(migrated["migrated_defaults"], ["abc_source"])
+        data.save_draft(self.root, {"panel": "assistant", "revision": saved["revision"], "draft": {
+            "defaults_version": 2, "values": {"abc_source": engine.ABC_DOWNSTREAM}}})
+        preserved = data.drafts(self.root)["assistant"]
+        self.assertEqual(preserved["draft"]["values"]["abc_source"], engine.ABC_DOWNSTREAM)
+
+    def test_assistant_job_project_scope_is_validated_and_preserved(self):
+        raw = {"values": {"music_idea": "A warm song about home", "lyrics_language": "English"},
+               "config": {"provider": "compatible", "base_url": "http://127.0.0.1:9999/v1",
+                          "model": "fixture"}, "project_id": "a" * 32}
+        self.assertEqual(data.normalize_request(self.root, raw)["project_id"], "a" * 32)
+        raw["project_id"] = "../escape"
+        with self.assertRaisesRegex(ValueError, "项目 ID"):
+            data.normalize_request(self.root, raw)
+
     def test_unknown_draft_schema_is_not_applied_or_overwritten(self):
         path = self.root / "userdata/assistant/drafts/plan.json"
         path.parent.mkdir(parents=True)
@@ -331,6 +426,7 @@ class AssistantTests(unittest.TestCase):
         from app.yue2_app import service
         from app.yue2_app.io import atomic_json
         store = service.JobStore.__new__(service.JobStore)
+        store.updating = False
         store.lock, store.storage_lock = threading.RLock(), threading.RLock()
         store.jobs, store.pending = {}, queue.Queue()
         with patch.object(service, "ROOT", self.root), patch.object(service, "OUTPUTS", self.root / "outputs/jobs"), \
@@ -347,6 +443,79 @@ class AssistantTests(unittest.TestCase):
             fresh = store.create("assistant", request, client_request_id="another-click")
             self.assertNotEqual(fresh["id"], first["id"])
 
+    def test_job_history_filters_assistant_project_scope(self):
+        import queue
+        import threading
+        from app.yue2_app import service
+        store = service.JobStore.__new__(service.JobStore)
+        store.updating = False
+        store.lock, store.storage_lock = threading.RLock(), threading.RLock()
+        store.jobs, store.pending = {}, queue.Queue()
+        with patch.object(service, "ROOT", self.root), patch.object(service, "OUTPUTS", self.root / "outputs/jobs"), \
+             patch.object(service, "runtime_ready", return_value={"capabilities": {}}):
+            first_request = self.request(); first_request["project_id"] = "a" * 32
+            second_request = self.request(); second_request["project_id"] = "b" * 32
+            first = store.create("assistant", first_request, client_request_id="project-a")
+            store.create("assistant", second_request, client_request_id="project-b")
+            jobs, total = store.list_page(project_id="a" * 32)
+            self.assertEqual(total, 1)
+            self.assertEqual(jobs[0]["id"], first["id"])
+            self.assertEqual(jobs[0]["project_id"], "a" * 32)
+
+    def test_latest_creative_job_excludes_connection_tests_before_limit(self):
+        import queue
+        import threading
+        from app.yue2_app import service
+        store = service.JobStore.__new__(service.JobStore)
+        store.updating = False
+        store.lock, store.storage_lock = threading.RLock(), threading.RLock()
+        store.jobs, store.pending = {}, queue.Queue()
+        project_id = "d" * 32
+        with patch.object(service, "ROOT", self.root), patch.object(
+                service, "OUTPUTS", self.root / "outputs/jobs"), patch.object(
+                service, "runtime_ready", return_value={"capabilities": {}}):
+            creative_request = self.request(); creative_request["project_id"] = project_id
+            creative = store.create("assistant", creative_request, client_request_id="creative")
+            for index in range(20):
+                connection_request = self.request()
+                connection_request.update(project_id=project_id, test_connection=True)
+                store.create("assistant", connection_request, client_request_id=f"connection-{index}")
+            jobs, total = store.list_page(limit=1, kind="assistant", project_id=project_id,
+                                          exclude_connection=True)
+            self.assertEqual(total, 1)
+            self.assertEqual([job["id"] for job in jobs], [creative["id"]])
+
+    def test_compact_latest_panel_history_restores_without_large_stage_arrays(self):
+        import queue
+        import threading
+        from app.yue2_app import service
+        from app.yue2_app.io import atomic_json
+        store = service.JobStore.__new__(service.JobStore)
+        store.updating = False
+        store.lock, store.storage_lock = threading.RLock(), threading.RLock()
+        store.jobs, store.pending = {}, queue.Queue()
+        project_id = "c" * 32
+        with patch.object(service, "ROOT", self.root), patch.object(
+                service, "OUTPUTS", self.root / "outputs/jobs"), patch.object(
+                service, "runtime_ready", return_value={"capabilities": {}}):
+            request = self.request(); request["project_id"] = project_id
+            older = store.create("assistant", request, client_request_id="older")
+            newer = store.create("assistant", request, client_request_id="newer")
+            doctor = store.create("doctor", {"project_id": project_id}, result_panel="create")
+            for created, timestamp in ((older, 1.0), (newer, 3.0), (doctor, 2.0)):
+                status = dict(store.jobs[created["id"]], created_at=timestamp,
+                              history=[{"step": index} for index in range(200)],
+                              result={"history": [{"step": index} for index in range(200)], "ok": True})
+                store.jobs[created["id"]] = status
+                atomic_json(service.job_directory(created["id"]) / "status.json", status)
+            jobs, total = store.list_page(project_id=project_id, latest_by_panel=True, compact=True)
+            self.assertEqual(total, 2)
+            self.assertEqual([job["id"] for job in jobs], [newer["id"], doctor["id"]])
+            for job in jobs:
+                self.assertNotIn("history", job)
+                self.assertNotIn("history", job["result"])
+                self.assertTrue(job["result"]["ok"])
+
     def test_secret_config_rejected_and_endpoint_no_credential_redirect(self):
         with self.assertRaises(ValueError):
             data.normalize_config({"api_key": "dummy"})
@@ -356,18 +525,37 @@ class AssistantTests(unittest.TestCase):
 
     def test_dpapi_and_session_credentials_bound_to_endpoint(self):
         store = data.Credentials(self.root)
-        ident = store.put("fixture-secret", "https://example.com/v1", remember=True)
-        self.assertNotIn("fixture-secret", store.path.read_text())
         second = data.Credentials(self.root)
-        self.assertEqual(second.get(ident, "https://example.com/v1"), "fixture-secret")
-        with self.assertRaises(ValueError):
-            second.get(ident, "https://elsewhere.com/v1")
-        second.delete(ident)
-        with self.assertRaises(ValueError):
-            second.get(ident, "https://example.com/v1")
+        if os.name == "nt":
+            ident = store.put("fixture-secret", "https://example.com/v1", remember=True)
+            self.assertNotIn("fixture-secret", store.path.read_text())
+            self.assertEqual(second.get(ident, "https://example.com/v1"), "fixture-secret")
+            with self.assertRaises(ValueError):
+                second.get(ident, "https://elsewhere.com/v1")
+            second.delete(ident)
+            with self.assertRaises(ValueError):
+                second.get(ident, "https://example.com/v1")
+        else:
+            with self.assertRaisesRegex(ValueError, "仅支持 Windows"):
+                store.put("fixture-secret", "https://example.com/v1", remember=True)
         ident = store.put("session-only", "https://example.com/v1")
+        self.assertEqual(store.get(ident, "https://example.com/v1"), "session-only")
+        with self.assertRaises(ValueError):
+            store.get(ident, "https://elsewhere.com/v1")
         with self.assertRaises(ValueError):
             second.get(ident, "https://example.com/v1")
+
+    def test_credential_state_distinguishes_ready_stale_local_and_loopback(self):
+        store = data.Credentials(self.root)
+        remote = data.normalize_config({"provider": "compatible", "base_url": "https://example.com/v1", "model": "fixture"})
+        self.assertFalse(data.credential_state(remote, store)["available"])
+        remote["credential_id"] = store.put("session-only", data.endpoint(remote))
+        self.assertTrue(data.credential_state(remote, store)["available"])
+        self.assertFalse(data.credential_state(remote, data.Credentials(self.root))["available"])
+        loopback = data.normalize_config({"provider": "compatible", "base_url": "http://127.0.0.1:9999/v1", "model": "fixture"})
+        self.assertTrue(data.credential_state(loopback, store)["available"])
+        local = data.normalize_config({"provider": "local", "model": "fixture.gguf"})
+        self.assertEqual(data.credential_state(local, store), {"required": False, "available": True, "reason": "local"})
 
     def test_edit_only_second_repeated_chorus(self):
         original = "[Verse]\nOpening line\n\n[Chorus]\nFirst hook\n\n[Chorus]\nSecond hook\n\n[Outro]\nGoodbye"

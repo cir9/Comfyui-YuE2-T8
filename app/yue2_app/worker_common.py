@@ -5,7 +5,7 @@ import time
 import traceback
 from pathlib import Path
 
-from .io import atomic_json
+from .io import atomic_json, json_file_lock
 
 
 class Cancelled(InterruptedError):
@@ -17,11 +17,19 @@ class JobContext:
         self.job_dir = job_dir.resolve()
         self.status_path = self.job_dir / "status.json"
         self.cancel_path = self.job_dir / "cancel.requested"
+        self.pause_path = self.job_dir / "pause.requested"
         self.started = time.time()
         self.last_token_update = 0.0
         self.token_phase: str | None = None
         self.token_count = 0
         self.last_stage = None
+
+    def _read_status(self) -> dict:
+        try:
+            import json
+            return json.loads(self.status_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, ValueError):
+            return {}
 
     def cancelled(self) -> bool:
         return self.cancel_path.exists()
@@ -30,22 +38,32 @@ class JobContext:
         if self.cancelled():
             raise Cancelled("用户已取消任务")
 
+    def pause_requested(self) -> bool:
+        return self.pause_path.exists()
+
+    def pause(self, **extra) -> None:
+        with json_file_lock(self.status_path):
+            current = self._read_status()
+            if current.get("status") in {"complete", "failed", "cancelled"}:
+                return
+            current.update({"status": "paused", "stage": "paused", "updated_at": time.time(),
+                            "finished_at": time.time(), "resumable": True, **extra})
+            atomic_json(self.status_path, current)
+
     def update(self, stage: str, **extra) -> None:
         if stage != self.last_stage:
             extra.setdefault("progress", None)
             extra.setdefault("completed", None)
             extra.setdefault("total", None)
             self.last_stage = stage
-        current = {}
-        try:
-            import json
-            current = json.loads(self.status_path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, ValueError):
-            pass
-        cancelling = self.cancelled()
-        current.update({"status": "cancelling" if cancelling else "running",
-                        "stage": "cancelling" if cancelling else stage, "updated_at": time.time(), **extra})
-        atomic_json(self.status_path, current)
+        with json_file_lock(self.status_path):
+            current = self._read_status()
+            if current.get("status") in {"complete", "failed", "cancelled", "paused"}:
+                return
+            cancelling = self.cancelled()
+            current.update({"status": "cancelling" if cancelling else "running",
+                            "stage": "cancelling" if cancelling else stage, "updated_at": time.time(), **extra})
+            atomic_json(self.status_path, current)
 
     def progress(self, stage: str, completed: int, total: int) -> None:
         self.check_cancelled()
@@ -77,32 +95,29 @@ class JobContext:
             self.last_token_update = now
             self.update("planning" if phase == "abc" else "semantic", tokens=self.token_count)
 
-    def finish(self, **extra) -> None:
-        self.check_cancelled()
-        current = {}
-        try:
-            import json
-            current = json.loads(self.status_path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, ValueError):
-            pass
-        current.update({"status": "complete", "stage": "complete", "progress": 1.0,
-                        "updated_at": time.time(),
-                        "finished_at": time.time(), **extra})
-        atomic_json(self.status_path, current)
+    def finish(self, *, committed: bool = False, **extra) -> None:
+        with json_file_lock(self.status_path):
+            current = self._read_status()
+            if current.get("status") in {"complete", "failed", "cancelled", "paused"}:
+                return
+            if not committed and self.cancelled():
+                raise Cancelled("用户已取消任务")
+            current.update({"status": "complete", "stage": "complete", "progress": 1.0,
+                            "updated_at": time.time(),
+                            "finished_at": time.time(), **extra})
+            atomic_json(self.status_path, current)
 
     def fail(self, exc: BaseException) -> None:
         status = "cancelled" if isinstance(exc, (Cancelled, InterruptedError, KeyboardInterrupt)) else "failed"
-        current = {}
-        try:
-            import json
-            current = json.loads(self.status_path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, ValueError):
-            pass
-        current["failed_stage"] = current.get("stage")
-        current.update({"status": status, "stage": status, "updated_at": time.time(),
-                        "finished_at": time.time(), "error_type": type(exc).__name__, "error": str(exc),
-                        "traceback": traceback.format_exc()[-12000:]})
-        atomic_json(self.status_path, current)
+        with json_file_lock(self.status_path):
+            current = self._read_status()
+            if current.get("status") in {"complete", "failed", "cancelled", "paused"}:
+                return
+            current["failed_stage"] = current.get("stage")
+            current.update({"status": status, "stage": status, "updated_at": time.time(),
+                            "finished_at": time.time(), "error_type": type(exc).__name__, "error": str(exc),
+                            "traceback": traceback.format_exc()[-12000:]})
+            atomic_json(self.status_path, current)
         try:
             self.memory("failed", failed_stage=current["failed_stage"])
         except Exception:
@@ -118,3 +133,5 @@ def configure_environment(root: Path) -> None:
     os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
     os.environ.setdefault("HF_HOME", str(root / "cache" / "huggingface"))
     os.environ.setdefault("HF_MODULES_CACHE", str(root / "cache" / "huggingface" / "modules"))
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(root / "runtime" / "playwright")
+    os.environ["PATH"] = str(root / "runtime" / "ffmpeg") + os.pathsep + os.environ.get("PATH", "")
